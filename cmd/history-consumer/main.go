@@ -108,6 +108,8 @@ INSERT INTO calls (
 		c.SentimentScore,
 		c.SlaMet,
 	)
+
+	log.Printf("History-consumer: Calls inserted is database")
 	return err
 }
 

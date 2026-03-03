@@ -102,6 +102,7 @@ func main() {
 			if evt.Status == "completed" || evt.Status == "abandoned" {
 				metrics.InCall--
 				metrics.FreeAgents++
+				metrics.InQueue += 10
 			} else {
 				metrics.InCall++
 				if metrics.FreeAgents > 0 {
