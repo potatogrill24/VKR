@@ -61,7 +61,7 @@ func main() {
 		defer cancel()
 
 		rows, err := pool.Query(ctx, `
-			SELECT id, name, value, window, calculated_at
+			SELECT id, name, value, time_window, calculated_at
 			FROM global_metrics
 			ORDER BY calculated_at DESC
 			LIMIT 100

@@ -165,4 +165,3 @@ func saveMetricsToRedis(ctx context.Context, rdb *redis.Client, m *RealtimeMetri
 	// ключ можно описать в дипломе как точку интеграции realtime-слоя
 	return rdb.Set(ctx, "realtime:metrics", data, 30*time.Second).Err()
 }
-

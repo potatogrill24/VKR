@@ -1,45 +1,92 @@
+// internal/storage/schema.go
 package storage
 
 import (
 	"context"
+	"log"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// EnsureSchema создает минимально необходимую схему БД, если её ещё нет.
-// Таблица calls хранит "сырые" события звонков.
-// Таблица global_metrics хранит агрегированные метрики для Monitoring API.
-func EnsureSchema(ctx context.Context, pool *pgxpool.Pool) error {
-	const ddl = `
-CREATE TABLE IF NOT EXISTS calls (
-    id              BIGSERIAL PRIMARY KEY,
-    call_id         TEXT NOT NULL,
-    agent_id        TEXT NOT NULL,
-    customer_id     TEXT NOT NULL,
-    queue           TEXT NOT NULL,
-    started_at      TIMESTAMPTZ NOT NULL,
-    ended_at        TIMESTAMPTZ NOT NULL,
-    status          TEXT NOT NULL,
-    wait_seconds    INTEGER NOT NULL,
-    talk_seconds    INTEGER NOT NULL,
-    wrapup_seconds  INTEGER NOT NULL,
-    sentiment_score DOUBLE PRECISION NOT NULL,
-    sla_met         BOOLEAN NOT NULL
-);
+// WaitForDB пытается подключиться к БД с повторными попытками
+func WaitForDB(ctx context.Context, dsn string, maxAttempts int) (*pgxpool.Pool, error) {
+	var pool *pgxpool.Pool
+	var err error
 
-CREATE INDEX IF NOT EXISTS idx_calls_started_at ON calls (started_at);
-CREATE INDEX IF NOT EXISTS idx_calls_queue_started_at ON calls (queue, started_at);
+	for i := 0; i < maxAttempts; i++ {
+		pool, err = pgxpool.New(ctx, dsn)
+		if err != nil {
+			log.Printf("Failed to connect to DB (attempt %d/%d): %v", i+1, maxAttempts, err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
 
-CREATE TABLE IF NOT EXISTS global_metrics (
-    id            BIGSERIAL PRIMARY KEY,
-    name          TEXT NOT NULL,
-    value         DOUBLE PRECISION NOT NULL,
-    window        TEXT NOT NULL,
-    calculated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-`
+		// Проверяем соединение
+		err = pool.Ping(ctx)
+		if err == nil {
+			log.Println("Successfully connected to PostgreSQL")
+			return pool, nil
+		}
 
-	_, err := pool.Exec(ctx, ddl)
-	return err
+		log.Printf("Ping failed (attempt %d/%d): %v", i+1, maxAttempts, err)
+		pool.Close()
+		time.Sleep(2 * time.Second)
+	}
+
+	return nil, err
 }
 
+// EnsureSchema создает необходимые таблицы, если их нет
+func EnsureSchema(ctx context.Context, pool *pgxpool.Pool) error {
+	// Таблица для звонков (используется history-consumer)
+	_, err := pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS calls (
+			id BIGSERIAL PRIMARY KEY,
+			call_id VARCHAR(50) UNIQUE NOT NULL,
+			agent_id VARCHAR(50),
+			customer_id VARCHAR(50),
+			queue VARCHAR(50),
+			started_at TIMESTAMPTZ,
+			ended_at TIMESTAMPTZ,
+			status VARCHAR(50),
+			wait_seconds INTEGER,
+			talk_seconds INTEGER,
+			wrapup_seconds INTEGER,
+			sentiment_score FLOAT,
+			sla_met BOOLEAN,
+			created_at TIMESTAMPTZ DEFAULT NOW()
+		)
+	`)
+	if err != nil {
+		return err
+	}
+
+	// Таблица для глобальных метрик (используется analyser)
+	// ВНИМАНИЕ: используем time_window вместо window!
+	_, err = pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS global_metrics (
+			id BIGSERIAL PRIMARY KEY,
+			name VARCHAR(50) NOT NULL,
+			value FLOAT NOT NULL,
+			time_window VARCHAR(10) NOT NULL,  -- переименовали с window на time_window
+			calculated_at TIMESTAMPTZ NOT NULL,
+			created_at TIMESTAMPTZ DEFAULT NOW()
+		)
+	`)
+	if err != nil {
+		return err
+	}
+
+	// Индекс для быстрого поиска последних метрик
+	_, err = pool.Exec(ctx, `
+		CREATE INDEX IF NOT EXISTS idx_global_metrics_calculated_at 
+		ON global_metrics(calculated_at DESC)
+	`)
+	if err != nil {
+		return err
+	}
+
+	log.Println("Database schema ensured successfully")
+	return nil
+}
