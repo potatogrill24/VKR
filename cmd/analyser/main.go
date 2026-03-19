@@ -1,3 +1,4 @@
+// cmd/analyser/main.go
 package main
 
 import (
@@ -11,53 +12,52 @@ import (
 	"github.com/example/contact-center-monitoring/internal/storage"
 )
 
-// В реальном проекте Analyser будет читать агрегированные данные из PostgreSQL
-// (или напрямую из Kafka/Redis) и считать сложные метрики раз в N часов.
-// Здесь реализован упрощенный каркас, который просто логирует запуск задачи.
-
 func main() {
 	dsn := os.Getenv("ANALYSER_PG_DSN")
 	if dsn == "" {
-		// по умолчанию ожидаем сервис postgres из docker-compose
 		dsn = "postgres://ccm:ccm@postgres:5432/ccm?sslmode=disable"
 	}
 
 	ctx := context.Background()
 
-	pool, err := pgxpool.New(ctx, dsn)
+	// Ждем PostgreSQL с retry (30 попыток)
+	pool, err := storage.WaitForDB(ctx, dsn, 30)
 	if err != nil {
-		log.Fatalf("analyser: cannot connect to postgres: %v", err)
+		log.Fatalf("analyser: cannot connect to postgres after retries: %v", err)
 	}
 	defer pool.Close()
 
-	interval := 2 * time.Hour
+	// Создаем схему БД
+	if err := storage.EnsureSchema(ctx, pool); err != nil {
+		log.Fatalf("analyser: ensure schema error: %v", err)
+	}
+
+	interval := 2 * time.Minute
+
 	if v := os.Getenv("ANALYSER_INTERVAL_MINUTES"); v != "" {
 		if m, err := time.ParseDuration(v + "m"); err == nil {
 			interval = m
 		}
 	}
 
-	if err := storage.EnsureSchema(ctx, pool); err != nil {
-		log.Fatalf("analyser: ensure schema error: %v", err)
-	}
-
 	log.Printf("analyser: started, interval=%s", interval)
+
+	if err := runAggregation(ctx, pool); err != nil {
+		log.Printf("analyser: initial aggregation error: %v", err)
+	}
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	for {
+	for range ticker.C {
 		if err := runAggregation(ctx, pool); err != nil {
 			log.Printf("analyser: aggregation error: %v", err)
 		}
-		<-ticker.C
 	}
 }
 
 func runAggregation(ctx context.Context, pool *pgxpool.Pool) error {
-	// Пример простой агрегации:
-	// - среднее время ожидания по всем звонкам за последний час
-	// - общее количество звонков за последний час
+	log.Println("analyser: starting aggregation tick...")
 
 	const q = `
 WITH last_hour AS (
@@ -65,10 +65,13 @@ WITH last_hour AS (
     FROM calls
     WHERE started_at >= NOW() - INTERVAL '1 hour'
 )
-INSERT INTO global_metrics (name, value, window, calculated_at)
+INSERT INTO global_metrics (name, value, time_window, calculated_at)
 VALUES
     ('avg_wait_seconds', COALESCE((SELECT AVG(wait_seconds)::FLOAT8 FROM last_hour), 0), '1h', NOW()),
-    ('calls_count',      COALESCE((SELECT COUNT(*)::FLOAT8        FROM last_hour), 0), '1h', NOW());
+    ('calls_count',      COALESCE((SELECT COUNT(*)::FLOAT8        FROM last_hour), 0), '1h', NOW()),
+    ('avg_talk_seconds', COALESCE((SELECT AVG(talk_seconds)::FLOAT8 FROM last_hour), 0), '1h', NOW()),
+    ('sla_percent',      COALESCE((SELECT AVG(CASE WHEN sla_met THEN 100 ELSE 0 END)::FLOAT8 FROM last_hour), 0), '1h', NOW()),
+    ('abandoned_calls',  COALESCE((SELECT COUNT(*)::FLOAT8 FROM last_hour WHERE status = 'abandoned'), 0), '1h', NOW());
 `
 
 	_, err := pool.Exec(ctx, q)
@@ -76,7 +79,6 @@ VALUES
 		return err
 	}
 
-	log.Println("analyser: aggregation tick completed")
+	log.Println("analyser: aggregation tick completed successfully")
 	return nil
 }
-
