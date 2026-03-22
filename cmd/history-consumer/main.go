@@ -1,4 +1,6 @@
 // cmd/history-consumer/main.go
+// History Consumer — читает события из Kafka и записывает в PostgreSQL
+// для построения исторических отчётов и агрегации метрик.
 package main
 
 import (
@@ -26,29 +28,22 @@ func main() {
 		dsn = "postgres://ccm:ccm@postgres:5432/ccm?sslmode=disable"
 	}
 
-	// Ждем PostgreSQL с retry (30 попыток)
 	pool, err := storage.WaitForDB(ctx, dsn, 30)
 	if err != nil {
 		log.Fatalf("history-consumer: cannot connect to postgres after retries: %v", err)
 	}
 	defer pool.Close()
 
-	// Создаем схему БД
-	if err := storage.EnsureSchema(ctx, pool); err != nil {
-		log.Fatalf("history-consumer: ensure schema error: %v", err)
+	if err := storage.CheckSchema(ctx, pool); err != nil {
+		log.Printf("history-consumer: schema check warning: %v", err)
 	}
 
 	topic := kafka.CallsTopicFromEnv()
-	if topic == "" {
-		topic = "ccm.calls" // значение по умолчанию
-	}
-
 	reader := kafka.NewReader(topic, "history-consumer")
 	defer reader.Close()
 
 	log.Printf("history-consumer: started, topic=%s", topic)
 
-	// Канал для подсчета статистики вставок (опционально)
 	insertCount := 0
 	lastLogTime := time.Now()
 
@@ -80,8 +75,7 @@ func main() {
 				}
 
 				insertCount++
-				
-				// Логируем статистику раз в минуту, а не после каждой вставки
+
 				if time.Since(lastLogTime) > time.Minute {
 					log.Printf("history-consumer: inserted %d calls in last minute", insertCount)
 					insertCount = 0
@@ -100,35 +94,60 @@ func insertCall(ctx context.Context, pool *pgxpool.Pool, c *models.CallEvent) er
 INSERT INTO calls (
     call_id,
     agent_id,
-    customer_id,
+    customer_phone,
     queue,
+    call_type,
     started_at,
+    answered_at,
     ended_at,
     status,
+    disconnect_reason,
     wait_seconds,
     talk_seconds,
-    wrapup_seconds,
+    hold_seconds,
+    wrap_up_seconds,
+    transfer_count,
+    is_first_call_resolution,
+    customer_rating,
     sentiment_score,
-    sla_met
+    sla_met,
+    ivr_path,
+    skill_used
 ) VALUES (
-    $1, $2, $3, $4, $5, $6,
-    $7, $8, $9, $10, $11, $12
-) ON CONFLICT (call_id) DO NOTHING` 
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+    $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+) ON CONFLICT (call_id) DO NOTHING`
 
 	_, err := pool.Exec(ctx, q,
 		c.CallID,
-		c.AgentID,
-		c.CustomerID,
+		nullIfEmpty(c.AgentID),
+		c.CustomerPhone,
 		c.Queue,
+		c.CallType,
 		c.StartedAt,
+		c.AnsweredAt,
 		c.EndedAt,
 		c.Status,
+		c.DisconnectReason,
 		c.WaitSeconds,
 		c.TalkSeconds,
+		c.HoldSeconds,
 		c.WrapUpSeconds,
+		c.TransferCount,
+		c.IsFirstCallResolution,
+		c.CustomerRating,
 		c.SentimentScore,
 		c.SlaMet,
+		nullIfEmpty(c.IVRPath),
+		nullIfEmpty(c.SkillUsed),
 	)
 
 	return err
+}
+
+func nullIfEmpty(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
 }

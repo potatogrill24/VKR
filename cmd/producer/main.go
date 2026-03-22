@@ -1,11 +1,23 @@
+// cmd/producer/main.go
+// Producer Service — HTTP API для приёма событий от внешних систем
+// и публикации их в Kafka.
+//
+// Эндпоинты:
+//   POST /api/events      — принять одно событие CallEvent
+//   POST /api/events/batch — принять массив событий
+//   GET  /api/health      — проверка здоровья
 package main
 
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log"
-	"math/rand"
+	"net/http"
 	"os"
+	"os/signal"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,83 +27,172 @@ import (
 	"github.com/example/contact-center-monitoring/internal/models"
 )
 
-func main() {
-	rand.Seed(time.Now().UnixNano())
+var (
+	eventsReceived uint64
+	eventsPublished uint64
+)
 
-	ctx := context.Background()
+func main() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	topic := kafka.CallsTopicFromEnv()
 	writer := kafka.NewWriter(topic)
 	defer writer.Close()
 
-	log.Printf("producer: starting, topic=%s, brokers=%s", topic, kafka.BrokersFromEnv())
+	log.Printf("producer: starting HTTP API, topic=%s, brokers=%s", topic, kafka.BrokersFromEnv())
 
-	interval := 500 * time.Millisecond
-	if v := os.Getenv("PRODUCER_INTERVAL_MS"); v != "" {
-		if ms, err := time.ParseDuration(v + "ms"); err == nil {
-			interval = ms
+	mux := http.NewServeMux()
+
+	// Health check
+	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":           "ok",
+			"events_received":  atomic.LoadUint64(&eventsReceived),
+			"events_published": atomic.LoadUint64(&eventsPublished),
+		})
+	})
+
+	// Приём одного события
+	mux.HandleFunc("/api/events", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
 		}
-	}
 
-	queues := []string{"support", "sales", "billing"}
-	agentIDs := []string{"agent-1", "agent-2", "agent-3", "agent-4"}
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 
-	for {
-		select {
-		case t := <-ticker.C:
-			event := randomCallEvent(t, queues, agentIDs)
-			payload, err := json.Marshal(event)
-			if err != nil {
-				log.Printf("producer: marshal error: %v", err)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read body", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		var event models.CallEvent
+		if err := json.Unmarshal(body, &event); err != nil {
+			http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		atomic.AddUint64(&eventsReceived, 1)
+
+		if err := publishEvent(ctx, writer, &event); err != nil {
+			log.Printf("producer: publish error: %v", err)
+			http.Error(w, "Failed to publish", http.StatusInternalServerError)
+			return
+		}
+
+		atomic.AddUint64(&eventsPublished, 1)
+		log.Printf("producer: published call_id=%s queue=%s agent=%s status=%s",
+			event.CallID, event.Queue, event.AgentID, event.Status)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":  "accepted",
+			"call_id": event.CallID,
+		})
+	})
+
+	// Приём пакета событий
+	mux.HandleFunc("/api/events/batch", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read body", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		var events []models.CallEvent
+		if err := json.Unmarshal(body, &events); err != nil {
+			http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		atomic.AddUint64(&eventsReceived, uint64(len(events)))
+
+		published := 0
+		for _, event := range events {
+			if err := publishEvent(ctx, writer, &event); err != nil {
+				log.Printf("producer: batch publish error: %v", err)
 				continue
 			}
-
-			err = writer.WriteMessages(ctx, kafkamessage(payload))
-			if err != nil {
-				log.Printf("producer: write error: %v", err)
-				continue
-			}
-			log.Printf("producer: sent call_id=%s queue=%s agent=%s status=%s sla=%v",
-				event.CallID, event.Queue, event.AgentID, event.Status, event.SlaMet)
+			published++
 		}
+
+		atomic.AddUint64(&eventsPublished, uint64(published))
+		log.Printf("producer: batch published %d/%d events", published, len(events))
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":    "accepted",
+			"received":  len(events),
+			"published": published,
+		})
+	})
+
+	addr := ":8082"
+	if v := os.Getenv("PRODUCER_HTTP_ADDR"); v != "" {
+		addr = v
 	}
+
+	srv := &http.Server{
+		Addr:         addr,
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+	}
+
+	go func() {
+		log.Printf("producer: HTTP server listening on %s", addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("producer: server error: %v", err)
+		}
+	}()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
+
+	log.Println("producer: shutting down...")
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	srv.Shutdown(shutdownCtx)
 }
 
-func randomCallEvent(now time.Time, queues, agentIDs []string) models.CallEvent {
-	wait := rand.Intn(60)             // 0-59 сек ожидания
-	talk := 30 + rand.Intn(600)       // 30-630 сек разговора
-	wrap := 5 + rand.Intn(60)         // 5-65 сек послеразговорной обработки
-	statuses := []string{"completed", "abandoned", "transferred"}
-	status := statuses[rand.Intn(len(statuses))]
-
-	start := now.Add(-time.Duration(wait+talk+wrap) * time.Second)
-	end := now
-
-	slaMet := wait <= 20 // SLA: ответ в течение 20 секунд
-
-	return models.CallEvent{
-		CallID:         uuid.NewString(),
-		AgentID:        agentIDs[rand.Intn(len(agentIDs))],
-		CustomerID:     uuid.NewString(),
-		Queue:          queues[rand.Intn(len(queues))],
-		StartedAt:      start,
-		EndedAt:        end,
-		Status:         status,
-		WaitSeconds:    wait,
-		TalkSeconds:    talk,
-		WrapUpSeconds:  wrap,
-		SentimentScore: rand.Float64()*2 - 1, // -1..1
-		SlaMet:         slaMet,
+func publishEvent(ctx context.Context, writer *kafkago.Writer, event *models.CallEvent) error {
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return err
 	}
-}
 
-func kafkamessage(payload []byte) kafkago.Message {
-	return kafkago.Message{
-		Key:   []byte(uuid.NewString()),
+	msg := kafkago.Message{
+		Key:   []byte(event.CallID),
 		Value: payload,
 		Time:  time.Now(),
 	}
+
+	if event.CallID == "" {
+		msg.Key = []byte(uuid.NewString())
+	}
+
+	return writer.WriteMessages(ctx, msg)
 }
 

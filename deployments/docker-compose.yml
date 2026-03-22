@@ -21,6 +21,11 @@ services:
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
 
   postgres:
     image: postgres:16
@@ -32,6 +37,7 @@ services:
       - "5432:5432"
     volumes:
       - ccm_pg_data:/var/lib/postgresql/data
+      - ./init-db:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ccm -d ccm"]
       interval: 10s
@@ -48,19 +54,25 @@ services:
       context: ..
       dockerfile: ./deployments/producer.Dockerfile
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     environment:
       KAFKA_BROKERS: kafka:9092
       KAFKA_CALLS_TOPIC: ccm.calls
-      PRODUCER_INTERVAL_MS: "500"
+      PRODUCER_HTTP_ADDR: ":8082"
+    ports:
+      - "8082:8082"
+    restart: on-failure
 
   realtime-consumer:
     build:
       context: ..
       dockerfile: ./deployments/realtime-consumer.Dockerfile
     depends_on:
-      - kafka
-      - redis
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_started
     environment:
       KAFKA_BROKERS: kafka:9092
       KAFKA_CALLS_TOPIC: ccm.calls
@@ -68,28 +80,34 @@ services:
       REDIS_ADDR: redis:6379
     ports:
       - "8080:8080"
+    restart: on-failure
 
   analyser:
     build:
       context: ..
       dockerfile: ./deployments/analyser.Dockerfile
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     environment:
       ANALYSER_PG_DSN: postgres://ccm:ccm@postgres:5432/ccm?sslmode=disable
-      ANALYSER_INTERVAL_MINUTES: "120"
+      ANALYSER_INTERVAL_MINUTES: "1"
+    restart: on-failure
 
   history-consumer:
     build:
       context: ..
       dockerfile: ./deployments/history-consumer.Dockerfile
     depends_on:
-      - kafka
-      - postgres
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
     environment:
       KAFKA_BROKERS: kafka:9092
       KAFKA_CALLS_TOPIC: ccm.calls
       HISTORY_PG_DSN: postgres://ccm:ccm@postgres:5432/ccm?sslmode=disable
+    restart: on-failure
 
   monitoring-api:
     build:

@@ -19,11 +19,13 @@ func NewWriter(topic string) *kafkago.Writer {
 
 func NewReader(topic, groupID string) *kafkago.Reader {
 	return kafkago.NewReader(kafkago.ReaderConfig{
-		Brokers:  []string{BrokersFromEnv()},
-		Topic:    topic,
-		GroupID:  groupID,
-		MinBytes: 1,
-		MaxBytes: 10e6,
+		Brokers:        []string{BrokersFromEnv()},
+		Topic:          topic,
+		GroupID:        groupID,
+		MinBytes:       1,
+		MaxBytes:       10e6,
+		StartOffset:    kafkago.FirstOffset, // Читаем с начала при первом запуске
+		CommitInterval: time.Second,
 	})
 }
 

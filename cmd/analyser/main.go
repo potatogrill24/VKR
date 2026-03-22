@@ -1,4 +1,6 @@
 // cmd/analyser/main.go
+// Analyser Service — периодически агрегирует данные из таблицы calls
+// и записывает глобальные метрики в global_metrics для отображения на дашборде.
 package main
 
 import (
@@ -20,20 +22,17 @@ func main() {
 
 	ctx := context.Background()
 
-	// Ждем PostgreSQL с retry (30 попыток)
 	pool, err := storage.WaitForDB(ctx, dsn, 30)
 	if err != nil {
 		log.Fatalf("analyser: cannot connect to postgres after retries: %v", err)
 	}
 	defer pool.Close()
 
-	// Создаем схему БД
-	if err := storage.EnsureSchema(ctx, pool); err != nil {
-		log.Fatalf("analyser: ensure schema error: %v", err)
+	if err := storage.CheckSchema(ctx, pool); err != nil {
+		log.Printf("analyser: schema check warning: %v", err)
 	}
 
-	interval := 2 * time.Minute
-
+	interval := 1 * time.Minute
 	if v := os.Getenv("ANALYSER_INTERVAL_MINUTES"); v != "" {
 		if m, err := time.ParseDuration(v + "m"); err == nil {
 			interval = m
@@ -57,28 +56,130 @@ func main() {
 }
 
 func runAggregation(ctx context.Context, pool *pgxpool.Pool) error {
-	log.Println("analyser: starting aggregation tick...")
+	log.Println("analyser: starting aggregation...")
 
-	const q = `
-WITH last_hour AS (
-    SELECT *
-    FROM calls
-    WHERE started_at >= NOW() - INTERVAL '1 hour'
-)
-INSERT INTO global_metrics (name, value, time_window, calculated_at)
-VALUES
-    ('avg_wait_seconds', COALESCE((SELECT AVG(wait_seconds)::FLOAT8 FROM last_hour), 0), '1h', NOW()),
-    ('calls_count',      COALESCE((SELECT COUNT(*)::FLOAT8        FROM last_hour), 0), '1h', NOW()),
-    ('avg_talk_seconds', COALESCE((SELECT AVG(talk_seconds)::FLOAT8 FROM last_hour), 0), '1h', NOW()),
-    ('sla_percent',      COALESCE((SELECT AVG(CASE WHEN sla_met THEN 100 ELSE 0 END)::FLOAT8 FROM last_hour), 0), '1h', NOW()),
-    ('abandoned_calls',  COALESCE((SELECT COUNT(*)::FLOAT8 FROM last_hour WHERE status = 'abandoned'), 0), '1h', NOW());
-`
-
-	_, err := pool.Exec(ctx, q)
-	if err != nil {
-		return err
+	// Общие метрики за последние 2 минуты
+	if err := aggregateGlobal(ctx, pool, "2 minutes", "2m"); err != nil {
+		log.Printf("analyser: global 2m error: %v", err)
 	}
 
-	log.Println("analyser: aggregation tick completed successfully")
+	// Общие метрики за последние 10 минут
+	if err := aggregateGlobal(ctx, pool, "10 minutes", "10m"); err != nil {
+		log.Printf("analyser: global 10m error: %v", err)
+	}
+
+	// Метрики по очередям за последние 2 минуты
+	if err := aggregateByQueue(ctx, pool, "2 minutes", "2m"); err != nil {
+		log.Printf("analyser: by queue 2m error: %v", err)
+	}
+
+	// Метрики по очередям за последние 10 минут
+	if err := aggregateByQueue(ctx, pool, "10 minutes", "10m"); err != nil {
+		log.Printf("analyser: by queue 10m error: %v", err)
+	}
+
+	log.Println("analyser: aggregation completed")
 	return nil
+}
+
+func aggregateGlobal(ctx context.Context, pool *pgxpool.Pool, interval, window string) error {
+	q := `
+INSERT INTO global_metrics (name, value, time_window, queue, calculated_at)
+SELECT name, value, $1, NULL, NOW()
+FROM (
+    SELECT 'calls_count' AS name, COUNT(*)::FLOAT8 AS value FROM calls WHERE started_at >= NOW() - $2::INTERVAL
+    UNION ALL
+    SELECT 'avg_wait_seconds', COALESCE(AVG(wait_seconds), 0) FROM calls WHERE started_at >= NOW() - $2::INTERVAL
+    UNION ALL
+    SELECT 'avg_talk_seconds', COALESCE(AVG(talk_seconds), 0) FROM calls WHERE started_at >= NOW() - $2::INTERVAL
+    UNION ALL
+    SELECT 'avg_handle_time', COALESCE(AVG(wait_seconds + talk_seconds + hold_seconds + wrap_up_seconds), 0) FROM calls WHERE started_at >= NOW() - $2::INTERVAL
+    UNION ALL
+    SELECT 'sla_percent', COALESCE(AVG(CASE WHEN sla_met THEN 100.0 ELSE 0.0 END), 0) FROM calls WHERE started_at >= NOW() - $2::INTERVAL
+    UNION ALL
+    SELECT 'abandonment_rate', 
+        CASE WHEN COUNT(*) > 0 
+            THEN (COUNT(*) FILTER (WHERE status = 'abandoned'))::FLOAT8 / COUNT(*)::FLOAT8 * 100 
+            ELSE 0 
+        END
+    FROM calls WHERE started_at >= NOW() - $2::INTERVAL
+    UNION ALL
+    SELECT 'transfer_rate',
+        CASE WHEN COUNT(*) > 0
+            THEN (COUNT(*) FILTER (WHERE status = 'transferred'))::FLOAT8 / COUNT(*)::FLOAT8 * 100
+            ELSE 0
+        END
+    FROM calls WHERE started_at >= NOW() - $2::INTERVAL
+    UNION ALL
+    SELECT 'fcr_rate',
+        CASE WHEN COUNT(*) FILTER (WHERE status = 'completed') > 0
+            THEN (COUNT(*) FILTER (WHERE is_first_call_resolution = true))::FLOAT8 / 
+                 (COUNT(*) FILTER (WHERE status = 'completed'))::FLOAT8 * 100
+            ELSE 0
+        END
+    FROM calls WHERE started_at >= NOW() - $2::INTERVAL
+    UNION ALL
+    SELECT 'avg_customer_rating', COALESCE(AVG(customer_rating), 0) FROM calls WHERE started_at >= NOW() - $2::INTERVAL AND customer_rating IS NOT NULL
+    UNION ALL
+    SELECT 'avg_sentiment', COALESCE(AVG(sentiment_score), 0) FROM calls WHERE started_at >= NOW() - $2::INTERVAL AND sentiment_score IS NOT NULL
+) AS metrics`
+
+	_, err := pool.Exec(ctx, q, window, interval)
+	return err
+}
+
+func aggregateByQueue(ctx context.Context, pool *pgxpool.Pool, interval, window string) error {
+	q := `
+INSERT INTO global_metrics (name, value, time_window, queue, calculated_at)
+SELECT 
+    'calls_count' AS name,
+    COUNT(*)::FLOAT8 AS value,
+    $1 AS time_window,
+    queue,
+    NOW() AS calculated_at
+FROM calls 
+WHERE started_at >= NOW() - $2::INTERVAL
+GROUP BY queue
+
+UNION ALL
+
+SELECT 
+    'avg_wait_seconds',
+    COALESCE(AVG(wait_seconds), 0),
+    $1,
+    queue,
+    NOW()
+FROM calls 
+WHERE started_at >= NOW() - $2::INTERVAL
+GROUP BY queue
+
+UNION ALL
+
+SELECT 
+    'sla_percent',
+    COALESCE(AVG(CASE WHEN sla_met THEN 100.0 ELSE 0.0 END), 0),
+    $1,
+    queue,
+    NOW()
+FROM calls 
+WHERE started_at >= NOW() - $2::INTERVAL
+GROUP BY queue
+
+UNION ALL
+
+SELECT 
+    'abandonment_rate',
+    CASE WHEN COUNT(*) > 0 
+        THEN (COUNT(*) FILTER (WHERE status = 'abandoned'))::FLOAT8 / COUNT(*)::FLOAT8 * 100 
+        ELSE 0 
+    END,
+    $1,
+    queue,
+    NOW()
+FROM calls 
+WHERE started_at >= NOW() - $2::INTERVAL
+GROUP BY queue`
+
+	_, err := pool.Exec(ctx, q, window, interval)
+	return err
 }
