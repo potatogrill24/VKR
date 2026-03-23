@@ -32,20 +32,14 @@ func main() {
 		log.Printf("analyser: schema check warning: %v", err)
 	}
 
-	interval := 1 * time.Minute
-	if v := os.Getenv("ANALYSER_INTERVAL_MINUTES"); v != "" {
-		if m, err := time.ParseDuration(v + "m"); err == nil {
-			interval = m
-		}
-	}
+	log.Println("analyser: started, interval=1m")
 
-	log.Printf("analyser: started, interval=%s", interval)
-
+	// Начальная агрегация
 	if err := runAggregation(ctx, pool); err != nil {
 		log.Printf("analyser: initial aggregation error: %v", err)
 	}
 
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
 	for range ticker.C {
@@ -58,22 +52,18 @@ func main() {
 func runAggregation(ctx context.Context, pool *pgxpool.Pool) error {
 	log.Println("analyser: starting aggregation...")
 
-	// Общие метрики за последние 2 минуты
+	// Метрики за 2 минуты
 	if err := aggregateGlobal(ctx, pool, "2 minutes", "2m"); err != nil {
 		log.Printf("analyser: global 2m error: %v", err)
 	}
-
-	// Общие метрики за последние 10 минут
-	if err := aggregateGlobal(ctx, pool, "10 minutes", "10m"); err != nil {
-		log.Printf("analyser: global 10m error: %v", err)
-	}
-
-	// Метрики по очередям за последние 2 минуты
 	if err := aggregateByQueue(ctx, pool, "2 minutes", "2m"); err != nil {
 		log.Printf("analyser: by queue 2m error: %v", err)
 	}
 
-	// Метрики по очередям за последние 10 минут
+	// Метрики за 10 минут
+	if err := aggregateGlobal(ctx, pool, "10 minutes", "10m"); err != nil {
+		log.Printf("analyser: global 10m error: %v", err)
+	}
 	if err := aggregateByQueue(ctx, pool, "10 minutes", "10m"); err != nil {
 		log.Printf("analyser: by queue 10m error: %v", err)
 	}
@@ -83,33 +73,34 @@ func runAggregation(ctx context.Context, pool *pgxpool.Pool) error {
 }
 
 func aggregateGlobal(ctx context.Context, pool *pgxpool.Pool, interval, window string) error {
+	// Используем ended_at — считаем звонки, которые ЗАВЕРШИЛИСЬ за последние N минут
 	q := `
 INSERT INTO global_metrics (name, value, time_window, queue, calculated_at)
 SELECT name, value, $1, NULL, NOW()
 FROM (
-    SELECT 'calls_count' AS name, COUNT(*)::FLOAT8 AS value FROM calls WHERE started_at >= NOW() - $2::INTERVAL
+    SELECT 'calls_count' AS name, COUNT(*)::FLOAT8 AS value FROM calls WHERE ended_at >= NOW() - $2::INTERVAL
     UNION ALL
-    SELECT 'avg_wait_seconds', COALESCE(AVG(wait_seconds), 0) FROM calls WHERE started_at >= NOW() - $2::INTERVAL
+    SELECT 'avg_wait_seconds', COALESCE(AVG(wait_seconds), 0) FROM calls WHERE ended_at >= NOW() - $2::INTERVAL
     UNION ALL
-    SELECT 'avg_talk_seconds', COALESCE(AVG(talk_seconds), 0) FROM calls WHERE started_at >= NOW() - $2::INTERVAL
+    SELECT 'avg_talk_seconds', COALESCE(AVG(talk_seconds), 0) FROM calls WHERE ended_at >= NOW() - $2::INTERVAL
     UNION ALL
-    SELECT 'avg_handle_time', COALESCE(AVG(wait_seconds + talk_seconds + hold_seconds + wrap_up_seconds), 0) FROM calls WHERE started_at >= NOW() - $2::INTERVAL
+    SELECT 'avg_handle_time', COALESCE(AVG(wait_seconds + talk_seconds + hold_seconds + wrap_up_seconds), 0) FROM calls WHERE ended_at >= NOW() - $2::INTERVAL
     UNION ALL
-    SELECT 'sla_percent', COALESCE(AVG(CASE WHEN sla_met THEN 100.0 ELSE 0.0 END), 0) FROM calls WHERE started_at >= NOW() - $2::INTERVAL
+    SELECT 'sla_percent', COALESCE(AVG(CASE WHEN sla_met THEN 100.0 ELSE 0.0 END), 0) FROM calls WHERE ended_at >= NOW() - $2::INTERVAL
     UNION ALL
     SELECT 'abandonment_rate', 
         CASE WHEN COUNT(*) > 0 
             THEN (COUNT(*) FILTER (WHERE status = 'abandoned'))::FLOAT8 / COUNT(*)::FLOAT8 * 100 
             ELSE 0 
         END
-    FROM calls WHERE started_at >= NOW() - $2::INTERVAL
+    FROM calls WHERE ended_at >= NOW() - $2::INTERVAL
     UNION ALL
     SELECT 'transfer_rate',
         CASE WHEN COUNT(*) > 0
             THEN (COUNT(*) FILTER (WHERE status = 'transferred'))::FLOAT8 / COUNT(*)::FLOAT8 * 100
             ELSE 0
         END
-    FROM calls WHERE started_at >= NOW() - $2::INTERVAL
+    FROM calls WHERE ended_at >= NOW() - $2::INTERVAL
     UNION ALL
     SELECT 'fcr_rate',
         CASE WHEN COUNT(*) FILTER (WHERE status = 'completed') > 0
@@ -117,11 +108,11 @@ FROM (
                  (COUNT(*) FILTER (WHERE status = 'completed'))::FLOAT8 * 100
             ELSE 0
         END
-    FROM calls WHERE started_at >= NOW() - $2::INTERVAL
+    FROM calls WHERE ended_at >= NOW() - $2::INTERVAL
     UNION ALL
-    SELECT 'avg_customer_rating', COALESCE(AVG(customer_rating), 0) FROM calls WHERE started_at >= NOW() - $2::INTERVAL AND customer_rating IS NOT NULL
+    SELECT 'avg_customer_rating', COALESCE(AVG(customer_rating), 0) FROM calls WHERE ended_at >= NOW() - $2::INTERVAL AND customer_rating IS NOT NULL
     UNION ALL
-    SELECT 'avg_sentiment', COALESCE(AVG(sentiment_score), 0) FROM calls WHERE started_at >= NOW() - $2::INTERVAL AND sentiment_score IS NOT NULL
+    SELECT 'avg_sentiment', COALESCE(AVG(sentiment_score), 0) FROM calls WHERE ended_at >= NOW() - $2::INTERVAL AND sentiment_score IS NOT NULL
 ) AS metrics`
 
 	_, err := pool.Exec(ctx, q, window, interval)
@@ -129,6 +120,7 @@ FROM (
 }
 
 func aggregateByQueue(ctx context.Context, pool *pgxpool.Pool, interval, window string) error {
+	// Используем ended_at — то же самое, что и в aggregateGlobal
 	q := `
 INSERT INTO global_metrics (name, value, time_window, queue, calculated_at)
 SELECT 
@@ -138,7 +130,7 @@ SELECT
     queue,
     NOW() AS calculated_at
 FROM calls 
-WHERE started_at >= NOW() - $2::INTERVAL
+WHERE ended_at >= NOW() - $2::INTERVAL
 GROUP BY queue
 
 UNION ALL
@@ -150,7 +142,7 @@ SELECT
     queue,
     NOW()
 FROM calls 
-WHERE started_at >= NOW() - $2::INTERVAL
+WHERE ended_at >= NOW() - $2::INTERVAL
 GROUP BY queue
 
 UNION ALL
@@ -162,7 +154,7 @@ SELECT
     queue,
     NOW()
 FROM calls 
-WHERE started_at >= NOW() - $2::INTERVAL
+WHERE ended_at >= NOW() - $2::INTERVAL
 GROUP BY queue
 
 UNION ALL
@@ -177,7 +169,7 @@ SELECT
     queue,
     NOW()
 FROM calls 
-WHERE started_at >= NOW() - $2::INTERVAL
+WHERE ended_at >= NOW() - $2::INTERVAL
 GROUP BY queue`
 
 	_, err := pool.Exec(ctx, q, window, interval)

@@ -206,13 +206,15 @@ GET  /api/health        — статус сервиса
 ### Monitoring API (8081)
 
 ```
-GET /api/health           — статус сервиса
-GET /api/metrics/global   — история глобальных метрик
-GET /api/metrics/latest   — последние значения метрик по окнам
-GET /api/metrics/queues   — метрики по очередям
-GET /api/metrics/realtime — realtime-метрики из Redis
-GET /api/agents           — список операторов
-GET /api/queues           — список очередей
+GET /api/health              — статус сервиса
+GET /api/metrics/global      — история глобальных метрик
+GET /api/metrics/latest      — последние значения метрик по окнам (2m, 10m)
+GET /api/metrics/queues      — метрики по очередям (напрямую из таблицы calls)
+GET /api/metrics/realtime    — realtime-метрики из Redis
+GET /api/stats/status-distribution — распределение статусов (за 1 час)
+GET /api/stats/top-agents    — топ операторов по звонкам (за 1 час)
+GET /api/agents              — список операторов
+GET /api/queues              — список очередей
 ```
 
 ### WebSocket (8080)

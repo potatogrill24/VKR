@@ -1,4 +1,19 @@
 import { useEffect, useState, useCallback } from 'react';
+import {
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  PieChart,
+  Pie,
+  Cell,
+  Legend,
+} from 'recharts';
 
 const API_BASE = 'http://localhost:8081';
 const WS_URL = 'ws://localhost:8080/ws/realtime';
@@ -54,14 +69,32 @@ type Agent = {
   is_active: boolean;
 };
 
+type StatusData = {
+  status: string;
+  count: number;
+};
+
+type AgentStats = {
+  agent_id: string;
+  full_name: string;
+  calls_count: number;
+  avg_talk_time: number;
+  sla_percent: number;
+  avg_rating: number;
+};
+
 export const App = () => {
   const [realtime, setRealtime] = useState<RealtimeMetrics | null>(null);
+  const [realtimeHistory, setRealtimeHistory] = useState<RealtimeMetrics[]>([]);
   const [latestMetrics, setLatestMetrics] = useState<LatestMetrics>({});
   const [queueMetrics, setQueueMetrics] = useState<QueueMetricsByWindow>({});
   const [agents, setAgents] = useState<Agent[]>([]);
   const [wsStatus, setWsStatus] = useState<'connecting' | 'open' | 'closed' | 'error'>('connecting');
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
-  const [activeTab, setActiveTab] = useState<'realtime' | 'global' | 'queues' | 'agents'>('realtime');
+  const [activeTab, setActiveTab] = useState<'realtime' | 'analytics' | 'queues' | 'agents'>('realtime');
+
+  const [statusDistribution, setStatusDistribution] = useState<StatusData[]>([]);
+  const [topAgents, setTopAgents] = useState<AgentStats[]>([]);
 
   const fetchLatestMetrics = useCallback(async () => {
     try {
@@ -93,18 +126,39 @@ export const App = () => {
     }
   }, []);
 
+  const fetchAnalytics = useCallback(async () => {
+    try {
+      const [statusRes, agentsRes] = await Promise.all([
+        fetch(`${API_BASE}/api/stats/status-distribution`),
+        fetch(`${API_BASE}/api/stats/top-agents`),
+      ]);
+
+      const [status, agents] = await Promise.all([
+        statusRes.json(),
+        agentsRes.json(),
+      ]);
+
+      setStatusDistribution(status || []);
+      setTopAgents(agents || []);
+    } catch (err) {
+      console.error('Ошибка загрузки аналитики', err);
+    }
+  }, []);
+
   useEffect(() => {
     fetchLatestMetrics();
     fetchQueueMetrics();
     fetchAgents();
+    fetchAnalytics();
 
     const interval = setInterval(() => {
       fetchLatestMetrics();
       fetchQueueMetrics();
-    }, 30000);
+      fetchAnalytics();
+    }, 120000); // Обновление каждые 2 минуты
 
     return () => clearInterval(interval);
-  }, [fetchLatestMetrics, fetchQueueMetrics, fetchAgents]);
+  }, [fetchLatestMetrics, fetchQueueMetrics, fetchAgents, fetchAnalytics]);
 
   useEffect(() => {
     let ws: WebSocket;
@@ -123,6 +177,10 @@ export const App = () => {
           const data = JSON.parse(event.data) as RealtimeMetrics;
           setRealtime(data);
           setLastUpdate(new Date());
+          setRealtimeHistory((prev) => {
+            const newHistory = [...prev, data].slice(-60);
+            return newHistory;
+          });
         } catch (e) {
           console.error('Ошибка парсинга данных', e);
         }
@@ -166,8 +224,8 @@ export const App = () => {
         <TabButton active={activeTab === 'realtime'} onClick={() => setActiveTab('realtime')}>
           В реальном времени
         </TabButton>
-        <TabButton active={activeTab === 'global'} onClick={() => setActiveTab('global')}>
-          Глобальные метрики
+        <TabButton active={activeTab === 'analytics'} onClick={() => setActiveTab('analytics')}>
+          Аналитика
         </TabButton>
         <TabButton active={activeTab === 'queues'} onClick={() => setActiveTab('queues')}>
           По очередям
@@ -178,8 +236,16 @@ export const App = () => {
       </nav>
 
       <main style={styles.main}>
-        {activeTab === 'realtime' && <RealtimeTab realtime={realtime} />}
-        {activeTab === 'global' && <GlobalTab metrics={latestMetrics} />}
+        {activeTab === 'realtime' && (
+          <RealtimeTab realtime={realtime} history={realtimeHistory} />
+        )}
+        {activeTab === 'analytics' && (
+          <AnalyticsTab
+            latestMetrics={latestMetrics}
+            statusDistribution={statusDistribution}
+            topAgents={topAgents}
+          />
+        )}
         {activeTab === 'queues' && <QueuesTab metrics={queueMetrics} />}
         {activeTab === 'agents' && <AgentsTab agents={agents} />}
       </main>
@@ -238,7 +304,13 @@ const TabButton = ({
   </button>
 );
 
-const RealtimeTab = ({ realtime }: { realtime: RealtimeMetrics | null }) => {
+const RealtimeTab = ({
+  realtime,
+  history,
+}: {
+  realtime: RealtimeMetrics | null;
+  history: RealtimeMetrics[];
+}) => {
   if (!realtime) {
     return (
       <div style={styles.emptyState}>
@@ -250,81 +322,40 @@ const RealtimeTab = ({ realtime }: { realtime: RealtimeMetrics | null }) => {
     );
   }
 
+  const chartData = history.map((h, i) => ({
+    time: i,
+    sl: h.service_level,
+    abandon: h.abandonment_rate,
+  }));
+
   return (
     <div>
       <h2 style={styles.sectionTitle}>Состояние операторов</h2>
-      <p style={styles.hint}>
-        Показывает текущее состояние операторов на основе последних событий
-      </p>
       <div style={styles.cardGrid}>
         <MetricCard
           label="Свободны"
-          hint="Операторы, готовые принять звонок"
           value={realtime.agents_available}
           color="#10b981"
           icon="👤"
         />
         <MetricCard
           label="На линии"
-          hint="Операторы, разговаривающие с клиентом"
           value={realtime.agents_in_call}
           color="#3b82f6"
           icon="📞"
         />
         <MetricCard
           label="Обработка"
-          hint="Послеразговорная обработка (wrap-up)"
           value={realtime.agents_wrap_up}
           color="#f59e0b"
           icon="📝"
         />
       </div>
 
-      <h2 style={styles.sectionTitle}>Состояние очереди</h2>
-      <p style={styles.hint}>
-        Метрики ожидания клиентов за последние 5 минут
-      </p>
-      <div style={styles.cardGrid}>
-        <MetricCard
-          label="В очереди"
-          hint="Клиенты, ожидающие ответа"
-          value={realtime.calls_in_queue}
-          color="#8b5cf6"
-          icon="📋"
-        />
-        <MetricCard
-          label="Макс. ожидание"
-          hint="Самое долгое ожидание за 5 мин"
-          value={realtime.longest_wait_sec}
-          suffix=" сек"
-          color={realtime.longest_wait_sec > 30 ? '#ef4444' : '#10b981'}
-          icon="⏱️"
-        />
-        <MetricCard
-          label="Среднее ожидание"
-          hint="Среднее время в очереди за 5 мин"
-          value={realtime.avg_wait_sec}
-          suffix=" сек"
-          color={realtime.avg_wait_sec > 20 ? '#f59e0b' : '#10b981'}
-          icon="⏳"
-        />
-        <MetricCard
-          label="Звонков/мин"
-          hint="Интенсивность входящих звонков"
-          value={realtime.calls_per_minute}
-          color="#06b6d4"
-          icon="📈"
-        />
-      </div>
-
-      <h2 style={styles.sectionTitle}>Качество обслуживания (за 5 минут)</h2>
-      <p style={styles.hint}>
-        Ключевые показатели эффективности контакт-центра
-      </p>
+      <h2 style={styles.sectionTitle}>Качество обслуживания</h2>
       <div style={styles.cardGrid}>
         <MetricCard
           label="Уровень сервиса (SL)"
-          hint="% звонков, отвеченных за 20 сек (SLA)"
           value={realtime.service_level}
           suffix="%"
           color={realtime.service_level >= 80 ? '#10b981' : realtime.service_level >= 60 ? '#f59e0b' : '#ef4444'}
@@ -333,24 +364,174 @@ const RealtimeTab = ({ realtime }: { realtime: RealtimeMetrics | null }) => {
         />
         <MetricCard
           label="Потерянные звонки"
-          hint="% клиентов, не дождавшихся ответа"
           value={realtime.abandonment_rate}
           suffix="%"
           color={realtime.abandonment_rate <= 5 ? '#10b981' : realtime.abandonment_rate <= 10 ? '#f59e0b' : '#ef4444'}
           icon="📉"
           decimals={1}
         />
+        <MetricCard
+          label="В очереди"
+          value={realtime.calls_in_queue}
+          color="#8b5cf6"
+          icon="📋"
+        />
+        <MetricCard
+          label="Среднее ожидание"
+          value={realtime.avg_wait_sec}
+          suffix=" сек"
+          color={realtime.avg_wait_sec > 20 ? '#f59e0b' : '#10b981'}
+          icon="⏳"
+        />
+      </div>
+
+      {chartData.length > 5 && (
+        <>
+          <h2 style={styles.sectionTitle}>Динамика метрик (последние 60 сек)</h2>
+          <div style={styles.chartContainer}>
+            <ResponsiveContainer width="100%" height={250}>
+              <AreaChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <XAxis dataKey="time" tick={{ fontSize: 12 }} stroke="#94a3b8" />
+                <YAxis tick={{ fontSize: 12 }} stroke="#94a3b8" domain={[0, 100]} />
+                <Tooltip
+                  contentStyle={{ backgroundColor: '#fff', border: '1px solid #e2e8f0', borderRadius: 8 }}
+                  formatter={(value: number, name: string) => {
+                    const labels: Record<string, string> = {
+                      sl: 'Уровень сервиса',
+                      abandon: 'Потери',
+                    };
+                    return [value.toFixed(1) + '%', labels[name] || name];
+                  }}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="sl"
+                  stroke="#10b981"
+                  fill="#10b98133"
+                  strokeWidth={2}
+                  name="sl"
+                />
+                <Area
+                  type="monotone"
+                  dataKey="abandon"
+                  stroke="#ef4444"
+                  fill="#ef444433"
+                  strokeWidth={2}
+                  name="abandon"
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
+const AnalyticsTab = ({
+  latestMetrics,
+  statusDistribution,
+  topAgents,
+}: {
+  latestMetrics: LatestMetrics;
+  statusDistribution: StatusData[];
+  topAgents: AgentStats[];
+}) => {
+  const statusLabels: Record<string, string> = {
+    completed: 'Завершён',
+    abandoned: 'Потерян',
+    transferred: 'Переведён',
+    voicemail: 'Голосовая почта',
+  };
+
+  const statusColors: Record<string, string> = {
+    completed: '#10b981',
+    abandoned: '#ef4444',
+    transferred: '#f59e0b',
+    voicemail: '#8b5cf6',
+  };
+
+  const pieData = statusDistribution.map((s) => ({
+    name: statusLabels[s.status] || s.status,
+    value: s.count,
+    color: statusColors[s.status] || '#94a3b8',
+  }));
+
+  return (
+    <div>
+      <h2 style={styles.sectionTitle}>Глобальные метрики</h2>
+      <p style={styles.hint}>
+        Агрегированные метрики. Данные появляются после накопления звонков за соответствующий период.
+      </p>
+      <GlobalMetricsTable metrics={latestMetrics} />
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24, marginTop: 32 }}>
+        <div>
+          <h2 style={styles.sectionTitle}>Распределение статусов (за 1 час)</h2>
+          <div style={styles.chartContainer}>
+            {pieData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={280}>
+                <PieChart>
+                  <Pie
+                    data={pieData}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={60}
+                    outerRadius={100}
+                    paddingAngle={2}
+                    dataKey="value"
+                    label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                    labelLine={false}
+                  >
+                    {pieData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <div style={styles.emptyChart}>Нет данных</div>
+            )}
+          </div>
+        </div>
+
+        <div>
+          <h2 style={styles.sectionTitle}>Топ операторов (за 1 час)</h2>
+          <div style={styles.chartContainer}>
+            {topAgents.length > 0 ? (
+              <ResponsiveContainer width="100%" height={280}>
+                <BarChart data={topAgents} layout="vertical">
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                  <XAxis type="number" tick={{ fontSize: 12 }} stroke="#94a3b8" />
+                  <YAxis
+                    type="category"
+                    dataKey="full_name"
+                    tick={{ fontSize: 11 }}
+                    stroke="#94a3b8"
+                    width={110}
+                  />
+                  <Tooltip
+                    contentStyle={{ backgroundColor: '#fff', border: '1px solid #e2e8f0', borderRadius: 8 }}
+                    formatter={(value: number) => [value, 'Звонков']}
+                  />
+                  <Bar dataKey="calls_count" fill="#3b82f6" name="Звонков" radius={[0, 4, 4, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div style={styles.emptyChart}>Нет данных</div>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
 };
 
-const GlobalTab = ({ metrics }: { metrics: LatestMetrics }) => {
+const GlobalMetricsTable = ({ metrics }: { metrics: LatestMetrics }) => {
   const windows = ['2m', '10m'];
-  const windowLabels: Record<string, string> = {
-    '2m': 'За 2 минуты',
-    '10m': 'За 10 минут',
-  };
+  const windowLabels: Record<string, string> = { '2m': 'За 2 минуты', '10m': 'За 10 минут' };
   const metricNames: Record<string, string> = {
     calls_count: 'Количество звонков',
     avg_wait_seconds: 'Среднее ожидание',
@@ -364,70 +545,42 @@ const GlobalTab = ({ metrics }: { metrics: LatestMetrics }) => {
     avg_sentiment: 'Тональность разговоров',
   };
 
-  const metricHints: Record<string, string> = {
-    calls_count: 'Общее число звонков за период',
-    avg_wait_seconds: 'Сколько в среднем клиент ждёт в очереди',
-    avg_talk_seconds: 'Средняя продолжительность разговора',
-    avg_handle_time: 'Ожидание + разговор + удержание + обработка',
-    sla_percent: '% звонков, отвеченных в пределах SLA (20 сек)',
-    abandonment_rate: '% клиентов, бросивших трубку',
-    transfer_rate: '% звонков, переведённых на другого оператора',
-    fcr_rate: '% вопросов, решённых с первого обращения',
-    avg_customer_rating: 'Средняя оценка от 1 до 5',
-    avg_sentiment: 'Анализ тональности: от -1 (негатив) до +1 (позитив)',
-  };
-
   const hasData = Object.keys(metrics).length > 0;
-
   if (!hasData) {
     return (
-      <div style={styles.emptyState}>
-        <p>Нет агрегированных данных</p>
-        <p style={{ fontSize: 14, color: '#94a3b8' }}>
-          Данные появятся после накопления истории звонков (обновление каждые 2 минуты)
-        </p>
+      <div style={styles.emptyChart}>
+        Данные появятся после накопления истории звонков (обновление каждые 2 минуты)
       </div>
     );
   }
 
   return (
-    <div>
-      <p style={styles.hint}>
-        Агрегированные метрики за последние 2 и 10 минут. Обновляются каждые 2 минуты.
-      </p>
-      <div style={styles.tableContainer}>
-        <table style={styles.table}>
-          <thead>
-            <tr>
-              <th style={styles.th}>Метрика</th>
-              {windows.map((w) => (
-                <th key={w} style={styles.th}>
-                  {windowLabels[w]}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {Object.entries(metricNames).map(([key, label]) => (
-              <tr key={key}>
-                <td style={styles.td}>
-                  <div>{label}</div>
-                  <div style={{ fontSize: 12, color: '#94a3b8' }}>{metricHints[key]}</div>
-                </td>
-                {windows.map((w) => {
-                  const value = metrics[w]?.[key as keyof typeof metrics[typeof w]];
-                  return (
-                    <td key={w} style={styles.tdValue}>
-                      {value !== undefined ? formatValue(key, value as number) : '—'}
-                    </td>
-                  );
-                })}
-              </tr>
+    <div style={styles.tableContainer}>
+      <table style={styles.table}>
+        <thead>
+          <tr>
+            <th style={styles.th}>Метрика</th>
+            {windows.map((w) => (
+              <th key={w} style={styles.th}>{windowLabels[w]}</th>
             ))}
-          </tbody>
-        </table>
-      </div>
-
+          </tr>
+        </thead>
+        <tbody>
+          {Object.entries(metricNames).map(([key, label]) => (
+            <tr key={key}>
+              <td style={styles.td}>{label}</td>
+              {windows.map((w) => {
+                const value = metrics[w]?.[key as keyof typeof metrics[typeof w]];
+                return (
+                  <td key={w} style={styles.tdValue}>
+                    {value !== undefined ? formatValue(key, value as number) : '—'}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
       {metrics['2m']?.calculated_at && (
         <p style={styles.footnote}>
           Последний расчёт: {new Date(metrics['2m'].calculated_at).toLocaleString()}
@@ -446,87 +599,139 @@ const QueuesTab = ({ metrics }: { metrics: QueueMetricsByWindow }) => {
     vip: 'VIP',
   };
 
-  const windows = ['2m', '10m'];
-  const windowLabels: Record<string, string> = {
-    '2m': 'За последние 2 минуты',
-    '10m': 'За последние 10 минут',
-  };
-
   const hasData = Object.keys(metrics).length > 0;
+  
+  const windowData2m = metrics['2m'] || {};
+  const windowData10m = metrics['10m'] || {};
+  const queues2m = Object.keys(windowData2m);
+  const queues10m = Object.keys(windowData10m);
 
-  if (!hasData) {
-    return (
-      <div style={styles.emptyState}>
-        <p>Нет данных по очередям</p>
-        <p style={{ fontSize: 14, color: '#94a3b8' }}>
-          Данные появятся после накопления истории звонков
-        </p>
-      </div>
-    );
-  }
+  const chartData = queues2m.map((q) => ({
+    name: queueNames[q] || q,
+    calls: windowData2m[q]?.calls_count || 0,
+  }));
 
   return (
     <div>
-      <p style={styles.hint}>
-        Метрики по каждой очереди. Обновляются каждые 2 минуты.
-      </p>
+      <h2 style={styles.sectionTitle}>Распределение звонков по очередям (за 2 минуты)</h2>
+      {chartData.length > 0 ? (
+        <div style={styles.chartContainer}>
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+              <XAxis dataKey="name" tick={{ fontSize: 12 }} stroke="#94a3b8" />
+              <YAxis tick={{ fontSize: 12 }} stroke="#94a3b8" />
+              <Tooltip
+                contentStyle={{ backgroundColor: '#fff', border: '1px solid #e2e8f0', borderRadius: 8 }}
+              />
+              <Legend />
+              <Bar dataKey="calls" fill="#3b82f6" name="Звонков" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      ) : (
+        <div style={styles.emptyChart}>Нет данных. Данные появятся после накопления звонков.</div>
+      )}
 
-      {windows.map((window) => {
-        const windowData = metrics[window];
-        if (!windowData) return null;
-
-        const queues = Object.keys(windowData);
-        if (queues.length === 0) return null;
-
-        return (
-          <div key={window}>
-            <h2 style={styles.sectionTitle}>{windowLabels[window]}</h2>
-            <div style={styles.queueGrid}>
-              {queues.map((queue) => {
-                const m = windowData[queue];
-                if (!m) return null;
-                return (
-                  <div key={queue} style={styles.queueCard}>
-                    <h3 style={styles.queueTitle}>{queueNames[queue] || queue}</h3>
-                    <div style={styles.queueMetrics}>
-                      <div style={styles.queueMetric}>
-                        <span style={styles.queueMetricLabel}>Звонков</span>
-                        <span style={styles.queueMetricValue}>{Math.round(m.calls_count || 0)}</span>
-                      </div>
-                      <div style={styles.queueMetric}>
-                        <span style={styles.queueMetricLabel}>Ср. ожидание</span>
-                        <span style={styles.queueMetricValue}>{Math.round(m.avg_wait_seconds || 0)} сек</span>
-                      </div>
-                      <div style={styles.queueMetric}>
-                        <span style={styles.queueMetricLabel}>Уровень сервиса</span>
-                        <span
-                          style={{
-                            ...styles.queueMetricValue,
-                            color: (m.sla_percent || 0) >= 80 ? '#10b981' : (m.sla_percent || 0) >= 60 ? '#f59e0b' : '#ef4444',
-                          }}
-                        >
-                          {(m.sla_percent || 0).toFixed(1)}%
-                        </span>
-                      </div>
-                      <div style={styles.queueMetric}>
-                        <span style={styles.queueMetricLabel}>Потеряно</span>
-                        <span
-                          style={{
-                            ...styles.queueMetricValue,
-                            color: (m.abandonment_rate || 0) <= 5 ? '#10b981' : (m.abandonment_rate || 0) <= 10 ? '#f59e0b' : '#ef4444',
-                          }}
-                        >
-                          {(m.abandonment_rate || 0).toFixed(1)}%
-                        </span>
-                      </div>
-                    </div>
+      <h2 style={styles.sectionTitle}>Детали по очередям (за 2 минуты)</h2>
+      <p style={styles.hint}>Данные обновляются каждые 2 минуты</p>
+      {queues2m.length > 0 ? (
+        <div style={styles.queueGrid}>
+          {queues2m.map((queue) => {
+            const m = windowData2m[queue];
+            if (!m) return null;
+            return (
+              <div key={queue} style={styles.queueCard}>
+                <h3 style={styles.queueTitle}>{queueNames[queue] || queue}</h3>
+                <div style={styles.queueMetrics}>
+                  <div style={styles.queueMetric}>
+                    <span style={styles.queueMetricLabel}>Звонков</span>
+                    <span style={styles.queueMetricValue}>{Math.round(m.calls_count || 0)}</span>
                   </div>
-                );
-              })}
-            </div>
-          </div>
-        );
-      })}
+                  <div style={styles.queueMetric}>
+                    <span style={styles.queueMetricLabel}>Ср. ожидание</span>
+                    <span style={styles.queueMetricValue}>{Math.round(m.avg_wait_seconds || 0)} сек</span>
+                  </div>
+                  <div style={styles.queueMetric}>
+                    <span style={styles.queueMetricLabel}>Уровень сервиса</span>
+                    <span
+                      style={{
+                        ...styles.queueMetricValue,
+                        color: (m.sla_percent || 0) >= 80 ? '#10b981' : (m.sla_percent || 0) >= 60 ? '#f59e0b' : '#ef4444',
+                      }}
+                    >
+                      {(m.sla_percent || 0).toFixed(1)}%
+                    </span>
+                  </div>
+                  <div style={styles.queueMetric}>
+                    <span style={styles.queueMetricLabel}>Потеряно</span>
+                    <span
+                      style={{
+                        ...styles.queueMetricValue,
+                        color: (m.abandonment_rate || 0) <= 5 ? '#10b981' : (m.abandonment_rate || 0) <= 10 ? '#f59e0b' : '#ef4444',
+                      }}
+                    >
+                      {(m.abandonment_rate || 0).toFixed(1)}%
+                    </span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div style={styles.emptyChart}>Нет данных по очередям. Данные появятся после накопления звонков за 2 минуты.</div>
+      )}
+
+      <h2 style={styles.sectionTitle}>Детали по очередям (за 10 минут)</h2>
+      <p style={styles.hint}>Данные обновляются каждые 2 минуты</p>
+      {queues10m.length > 0 ? (
+        <div style={styles.queueGrid}>
+          {queues10m.map((queue) => {
+            const m = windowData10m[queue];
+            if (!m) return null;
+            return (
+              <div key={queue} style={styles.queueCard}>
+                <h3 style={styles.queueTitle}>{queueNames[queue] || queue}</h3>
+                <div style={styles.queueMetrics}>
+                  <div style={styles.queueMetric}>
+                    <span style={styles.queueMetricLabel}>Звонков</span>
+                    <span style={styles.queueMetricValue}>{Math.round(m.calls_count || 0)}</span>
+                  </div>
+                  <div style={styles.queueMetric}>
+                    <span style={styles.queueMetricLabel}>Ср. ожидание</span>
+                    <span style={styles.queueMetricValue}>{Math.round(m.avg_wait_seconds || 0)} сек</span>
+                  </div>
+                  <div style={styles.queueMetric}>
+                    <span style={styles.queueMetricLabel}>Уровень сервиса</span>
+                    <span
+                      style={{
+                        ...styles.queueMetricValue,
+                        color: (m.sla_percent || 0) >= 80 ? '#10b981' : (m.sla_percent || 0) >= 60 ? '#f59e0b' : '#ef4444',
+                      }}
+                    >
+                      {(m.sla_percent || 0).toFixed(1)}%
+                    </span>
+                  </div>
+                  <div style={styles.queueMetric}>
+                    <span style={styles.queueMetricLabel}>Потеряно</span>
+                    <span
+                      style={{
+                        ...styles.queueMetricValue,
+                        color: (m.abandonment_rate || 0) <= 5 ? '#10b981' : (m.abandonment_rate || 0) <= 10 ? '#f59e0b' : '#ef4444',
+                      }}
+                    >
+                      {(m.abandonment_rate || 0).toFixed(1)}%
+                    </span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div style={styles.emptyChart}>Нет данных по очередям. Данные появятся после накопления звонков за 10 минут.</div>
+      )}
     </div>
   );
 };
@@ -550,16 +755,15 @@ const AgentsTab = ({ agents }: { agents: Agent[] }) => {
 
   return (
     <div>
-      <h2 style={styles.sectionTitle}>Операторы ({agents.length})</h2>
-      <p style={styles.hint}>
-        Справочник операторов контакт-центра
-      </p>
+      <h2 style={styles.sectionTitle}>Список операторов ({agents.length})</h2>
+      <p style={styles.hint}>Справочник операторов контакт-центра</p>
       <div style={styles.tableContainer}>
         <table style={styles.table}>
           <thead>
             <tr>
               <th style={styles.th}>ID</th>
               <th style={styles.th}>Имя</th>
+              <th style={styles.th}>Email</th>
               <th style={styles.th}>Основная очередь</th>
               <th style={styles.th}>Навыки</th>
               <th style={styles.th}>Дата найма</th>
@@ -570,6 +774,7 @@ const AgentsTab = ({ agents }: { agents: Agent[] }) => {
               <tr key={agent.agent_id}>
                 <td style={styles.td}>{agent.agent_id}</td>
                 <td style={styles.td}>{agent.full_name}</td>
+                <td style={styles.td}>{agent.email}</td>
                 <td style={styles.td}>
                   <span style={styles.badge}>{queueNames[agent.primary_queue] || agent.primary_queue}</span>
                 </td>
@@ -594,7 +799,6 @@ const AgentsTab = ({ agents }: { agents: Agent[] }) => {
 
 const MetricCard = ({
   label,
-  hint,
   value,
   suffix = '',
   color,
@@ -602,7 +806,6 @@ const MetricCard = ({
   decimals = 0,
 }: {
   label: string;
-  hint?: string;
   value: number;
   suffix?: string;
   color: string;
@@ -613,7 +816,6 @@ const MetricCard = ({
     <div style={styles.cardIcon}>{icon}</div>
     <div style={styles.cardContent}>
       <div style={styles.cardLabel}>{label}</div>
-      {hint && <div style={styles.cardHint}>{hint}</div>}
       <div style={{ ...styles.cardValue, color }}>
         {decimals > 0 ? value.toFixed(decimals) : value}
         {suffix}
@@ -698,18 +900,18 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 18,
     fontWeight: 600,
     color: '#1e293b',
-    marginBottom: 8,
+    marginBottom: 16,
     marginTop: 32,
   },
   hint: {
     fontSize: 14,
     color: '#64748b',
     marginBottom: 16,
-    marginTop: 0,
+    marginTop: -8,
   },
   cardGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
     gap: 16,
   },
   card: {
@@ -718,29 +920,41 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 20,
     boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
     display: 'flex',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     gap: 16,
   },
   cardIcon: {
-    fontSize: 32,
+    fontSize: 28,
   },
   cardContent: {
     flex: 1,
   },
   cardLabel: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: 500,
-    color: '#334155',
-    marginBottom: 2,
-  },
-  cardHint: {
-    fontSize: 12,
-    color: '#94a3b8',
-    marginBottom: 8,
+    color: '#64748b',
+    marginBottom: 4,
   },
   cardValue: {
     fontSize: 28,
     fontWeight: 700,
+  },
+  chartContainer: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 20,
+    boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+  },
+  emptyChart: {
+    height: 200,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    color: '#94a3b8',
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 20,
+    textAlign: 'center',
   },
   tableContainer: {
     backgroundColor: '#fff',
@@ -754,38 +968,37 @@ const styles: Record<string, React.CSSProperties> = {
   },
   th: {
     textAlign: 'left',
-    padding: '14px 16px',
+    padding: '12px 16px',
     backgroundColor: '#f8fafc',
     borderBottom: '1px solid #e2e8f0',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: 600,
     color: '#475569',
   },
   td: {
-    padding: '12px 16px',
+    padding: '10px 16px',
     borderBottom: '1px solid #f1f5f9',
-    fontSize: 14,
+    fontSize: 13,
     color: '#334155',
-    verticalAlign: 'top',
   },
   tdValue: {
-    padding: '12px 16px',
+    padding: '10px 16px',
     borderBottom: '1px solid #f1f5f9',
-    fontSize: 14,
+    fontSize: 13,
     color: '#1e293b',
     fontWeight: 500,
     textAlign: 'right',
-    verticalAlign: 'middle',
   },
   footnote: {
-    marginTop: 12,
-    fontSize: 13,
+    padding: '12px 16px',
+    fontSize: 12,
     color: '#94a3b8',
     textAlign: 'right',
+    borderTop: '1px solid #f1f5f9',
   },
   queueGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
     gap: 16,
   },
   queueCard: {
@@ -825,7 +1038,7 @@ const styles: Record<string, React.CSSProperties> = {
     backgroundColor: '#e0f2fe',
     color: '#0369a1',
     borderRadius: 6,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: 500,
   },
   skillBadge: {
@@ -834,7 +1047,7 @@ const styles: Record<string, React.CSSProperties> = {
     backgroundColor: '#f1f5f9',
     color: '#475569',
     borderRadius: 4,
-    fontSize: 12,
+    fontSize: 11,
   },
   emptyState: {
     textAlign: 'center',

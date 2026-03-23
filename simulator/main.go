@@ -230,8 +230,16 @@ func updateAgentState(agent *Agent, event *CallEvent) {
 	}
 
 	// Оператор занят на время разговора + обработки
-	busyDuration := time.Duration(event.TalkSeconds+event.WrapUpSeconds) * time.Second
-	agent.LastCallEnd = time.Now().Add(busyDuration)
+	// Сжимаем время в 60 раз для симуляции (1 минута реального времени = 1 секунда симуляции)
+	// Это позволяет генерировать реалистичные данные без блокировки операторов
+	busySeconds := (event.TalkSeconds + event.WrapUpSeconds) / 60
+	if busySeconds < 3 {
+		busySeconds = 3 // Минимум 3 секунды занятости
+	}
+	if busySeconds > 10 {
+		busySeconds = 10 // Максимум 10 секунд занятости
+	}
+	agent.LastCallEnd = time.Now().Add(time.Duration(busySeconds) * time.Second)
 	agent.IsBusy = true
 }
 

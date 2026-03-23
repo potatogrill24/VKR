@@ -84,6 +84,16 @@ func main() {
 		handleQueues(w, r, pool)
 	}))
 
+	// Распределение статусов звонков
+	mux.HandleFunc("/api/stats/status-distribution", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		handleStatusDistribution(w, r, pool)
+	}))
+
+	// Топ операторов по метрикам
+	mux.HandleFunc("/api/stats/top-agents", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		handleTopAgents(w, r, pool)
+	}))
+
 	addr := ":8081"
 	if v := os.Getenv("MONITORING_HTTP_ADDR"); v != "" {
 		addr = v
@@ -146,7 +156,7 @@ func handleLatestMetrics(w http.ResponseWriter, r *http.Request, pool *pgxpool.P
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// Получаем последние значения каждой метрики для каждого окна
+	// Получаем последние значения каждой метрики для каждого окна из global_metrics
 	rows, err := pool.Query(ctx, `
 		SELECT DISTINCT ON (name, time_window) 
 			name, value, time_window, calculated_at
@@ -183,10 +193,11 @@ func handleQueueMetrics(w http.ResponseWriter, r *http.Request, pool *pgxpool.Po
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// Получаем метрики по очередям для обоих окон (2m и 10m)
+	// Читаем метрики по очередям из global_metrics (заполняется analyser'ом)
+	// Это обеспечивает консистентность с глобальными метриками
 	rows, err := pool.Query(ctx, `
 		SELECT DISTINCT ON (time_window, queue, name) 
-			time_window, queue, name, value, calculated_at
+			time_window, queue, name, value
 		FROM global_metrics
 		WHERE queue IS NOT NULL AND time_window IN ('2m', '10m')
 		ORDER BY time_window, queue, name, calculated_at DESC
@@ -203,8 +214,7 @@ func handleQueueMetrics(w http.ResponseWriter, r *http.Request, pool *pgxpool.Po
 	for rows.Next() {
 		var window, queue, name string
 		var value float64
-		var calculatedAt time.Time
-		if err := rows.Scan(&window, &queue, &name, &value, &calculatedAt); err != nil {
+		if err := rows.Scan(&window, &queue, &name, &value); err != nil {
 			continue
 		}
 		if result[window] == nil {
@@ -320,6 +330,92 @@ func handleQueues(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool) {
 			continue
 		}
 		result = append(result, q)
+	}
+
+	json.NewEncoder(w).Encode(result)
+}
+
+func handleStatusDistribution(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	rows, err := pool.Query(ctx, `
+		SELECT 
+			status,
+			COUNT(*) AS count
+		FROM calls
+		WHERE started_at >= NOW() - INTERVAL '1 hour'
+		GROUP BY status
+		ORDER BY count DESC
+	`)
+	if err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
+		log.Printf("monitoring-api: query error: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	type StatusData struct {
+		Status string `json:"status"`
+		Count  int    `json:"count"`
+	}
+
+	var result []StatusData
+	for rows.Next() {
+		var s StatusData
+		if err := rows.Scan(&s.Status, &s.Count); err != nil {
+			continue
+		}
+		result = append(result, s)
+	}
+
+	json.NewEncoder(w).Encode(result)
+}
+
+func handleTopAgents(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	rows, err := pool.Query(ctx, `
+		SELECT 
+			c.agent_id,
+			a.full_name,
+			COUNT(*) AS calls_count,
+			COALESCE(AVG(c.talk_seconds), 0) AS avg_talk_time,
+			COALESCE(AVG(CASE WHEN c.sla_met THEN 100.0 ELSE 0.0 END), 0) AS sla_percent,
+			COALESCE(AVG(c.customer_rating), 0) AS avg_rating
+		FROM calls c
+		JOIN agents a ON c.agent_id = a.agent_id
+		WHERE c.started_at >= NOW() - INTERVAL '1 hour'
+			AND c.agent_id IS NOT NULL
+			AND c.status IN ('completed', 'transferred')
+		GROUP BY c.agent_id, a.full_name
+		ORDER BY calls_count DESC
+		LIMIT 10
+	`)
+	if err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
+		log.Printf("monitoring-api: query error: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	type AgentStats struct {
+		AgentID     string  `json:"agent_id"`
+		FullName    string  `json:"full_name"`
+		CallsCount  int     `json:"calls_count"`
+		AvgTalkTime float64 `json:"avg_talk_time"`
+		SLAPercent  float64 `json:"sla_percent"`
+		AvgRating   float64 `json:"avg_rating"`
+	}
+
+	var result []AgentStats
+	for rows.Next() {
+		var a AgentStats
+		if err := rows.Scan(&a.AgentID, &a.FullName, &a.CallsCount, &a.AvgTalkTime, &a.SLAPercent, &a.AvgRating); err != nil {
+			continue
+		}
+		result = append(result, a)
 	}
 
 	json.NewEncoder(w).Encode(result)

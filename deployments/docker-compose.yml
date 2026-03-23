@@ -91,7 +91,6 @@ services:
         condition: service_healthy
     environment:
       ANALYSER_PG_DSN: postgres://ccm:ccm@postgres:5432/ccm?sslmode=disable
-      ANALYSER_INTERVAL_MINUTES: "1"
     restart: on-failure
 
   history-consumer:
