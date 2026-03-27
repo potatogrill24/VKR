@@ -67,13 +67,23 @@ func runAggregation(ctx context.Context, pool *pgxpool.Pool) error {
 	if err := aggregateByQueue(ctx, pool, "10 minutes", "10m"); err != nil {
 		log.Printf("analyser: by queue 10m error: %v", err)
 	}
+	if err := aggregateByStatus(ctx, pool, "10 minutes", "10m"); err != nil {
+		log.Printf("analyser: by status 10m error: %v", err)
+	}
+	if err := aggregateTopAgents(ctx, pool, "10 minutes", "10m"); err != nil {
+		log.Printf("analyser: top agents 10m error: %v", err)
+	}
+
+	// Очистка старых метрик (старше 1 часа) для предотвращения роста таблицы
+	if _, err := pool.Exec(ctx, `DELETE FROM global_metrics WHERE calculated_at < NOW() - INTERVAL '1 hour'`); err != nil {
+		log.Printf("analyser: cleanup error: %v", err)
+	}
 
 	log.Println("analyser: aggregation completed")
 	return nil
 }
 
 func aggregateGlobal(ctx context.Context, pool *pgxpool.Pool, interval, window string) error {
-	// Используем ended_at — считаем звонки, которые ЗАВЕРШИЛИСЬ за последние N минут
 	q := `
 INSERT INTO global_metrics (name, value, time_window, queue, calculated_at)
 SELECT name, value, $1, NULL, NOW()
@@ -120,7 +130,6 @@ FROM (
 }
 
 func aggregateByQueue(ctx context.Context, pool *pgxpool.Pool, interval, window string) error {
-	// Используем ended_at — то же самое, что и в aggregateGlobal
 	q := `
 INSERT INTO global_metrics (name, value, time_window, queue, calculated_at)
 SELECT 
@@ -171,6 +180,42 @@ SELECT
 FROM calls 
 WHERE ended_at >= NOW() - $2::INTERVAL
 GROUP BY queue`
+
+	_, err := pool.Exec(ctx, q, window, interval)
+	return err
+}
+
+func aggregateByStatus(ctx context.Context, pool *pgxpool.Pool, interval, window string) error {
+	q := `
+INSERT INTO global_metrics (name, value, time_window, queue, calculated_at)
+SELECT 
+    'status_' || status AS name,
+    COUNT(*)::FLOAT8 AS value,
+    $1 AS time_window,
+    NULL AS queue,
+    NOW() AS calculated_at
+FROM calls 
+WHERE ended_at >= NOW() - $2::INTERVAL
+GROUP BY status`
+
+	_, err := pool.Exec(ctx, q, window, interval)
+	return err
+}
+
+func aggregateTopAgents(ctx context.Context, pool *pgxpool.Pool, interval, window string) error {
+	q := `
+INSERT INTO global_metrics (name, value, time_window, queue, calculated_at)
+SELECT 
+    'agent_calls_' || c.agent_id AS name,
+    COUNT(*)::FLOAT8 AS value,
+    $1 AS time_window,
+    NULL AS queue,
+    NOW() AS calculated_at
+FROM calls c
+WHERE c.ended_at >= NOW() - $2::INTERVAL
+    AND c.agent_id IS NOT NULL
+    AND c.status IN ('completed', 'transferred')
+GROUP BY c.agent_id`
 
 	_, err := pool.Exec(ctx, q, window, interval)
 	return err

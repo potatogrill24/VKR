@@ -58,10 +58,11 @@ var (
 		ID     string
 		Weight int
 	}{
-		{"support", 40},     // 40% звонков — поддержка
-		{"sales", 25},       // 25% — продажи
-		{"billing", 20},     // 20% — биллинг
+		{"support", 35},      // 35% звонков — поддержка
+		{"sales", 25},        // 25% — продажи
+		{"billing", 20},      // 20% — биллинг
 		{"tech-support", 15}, // 15% — тех. поддержка
+		{"vip", 5},           // 5% — VIP-клиенты
 	}
 
 	// Типы звонков
@@ -98,7 +99,7 @@ var (
 func main() {
 	var (
 		producerURL = flag.String("url", "http://localhost:8082/api/events", "URL producer API")
-		intervalSec = flag.Int("interval", 3, "Средний интервал между звонками (секунды)")
+		intervalSec = flag.Int("interval", 7, "Средний интервал между звонками (секунды)")
 		dryRun      = flag.Bool("dry-run", false, "Только печатать JSON, не отправлять")
 		totalEvents = flag.Int("total", 0, "Общее количество событий (0 = бесконечно)")
 	)
@@ -401,10 +402,10 @@ func generateTalkTime(status string) int {
 	case "abandoned", "voicemail":
 		return 0
 	case "transferred":
-		return 30 + rand.Intn(90) // 30-120 сек перед переводом
+		return 20 + rand.Intn(40) // 20-60 сек перед переводом
 	default:
-		// Нормальный разговор: 2-8 минут
-		return 120 + rand.Intn(360)
+		// Нормальный разговор: 1-4 минуты (реалистично для демо)
+		return 60 + rand.Intn(180)
 	}
 }
 
@@ -423,8 +424,8 @@ func generateWrapUpTime(status string) int {
 	if status == "abandoned" || status == "voicemail" {
 		return 0
 	}
-	// Послеразговорная обработка: 15-45 сек
-	return 15 + rand.Intn(30)
+	// Послеразговорная обработка: 10-30 сек
+	return 10 + rand.Intn(20)
 }
 
 func generatePhone() string {

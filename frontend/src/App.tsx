@@ -16,7 +16,7 @@ import {
 } from 'recharts';
 
 const API_BASE = 'http://localhost:8081';
-const WS_URL = 'ws://localhost:8080/ws/realtime';
+const WS_URL = 'ws://localhost:8081/ws/realtime';
 
 type RealtimeMetrics = {
   agents_available: number;
@@ -225,13 +225,13 @@ export const App = () => {
           В реальном времени
         </TabButton>
         <TabButton active={activeTab === 'analytics'} onClick={() => setActiveTab('analytics')}>
-          Аналитика
+          По звонкам
         </TabButton>
         <TabButton active={activeTab === 'queues'} onClick={() => setActiveTab('queues')}>
           По очередям
         </TabButton>
         <TabButton active={activeTab === 'agents'} onClick={() => setActiveTab('agents')}>
-          Операторы
+          Список операторов
         </TabButton>
       </nav>
 
@@ -461,14 +461,11 @@ const AnalyticsTab = ({
   return (
     <div>
       <h2 style={styles.sectionTitle}>Глобальные метрики</h2>
-      <p style={styles.hint}>
-        Агрегированные метрики. Данные появляются после накопления звонков за соответствующий период.
-      </p>
       <GlobalMetricsTable metrics={latestMetrics} />
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24, marginTop: 32 }}>
         <div>
-          <h2 style={styles.sectionTitle}>Распределение статусов (за 1 час)</h2>
+          <h2 style={styles.sectionTitle}>Распределение статусов (за 10 мин)</h2>
           <div style={styles.chartContainer}>
             {pieData.length > 0 ? (
               <ResponsiveContainer width="100%" height={280}>
@@ -498,7 +495,7 @@ const AnalyticsTab = ({
         </div>
 
         <div>
-          <h2 style={styles.sectionTitle}>Топ операторов (за 1 час)</h2>
+          <h2 style={styles.sectionTitle}>Топ операторов (за 10 мин)</h2>
           <div style={styles.chartContainer}>
             {topAgents.length > 0 ? (
               <ResponsiveContainer width="100%" height={280}>
@@ -599,42 +596,93 @@ const QueuesTab = ({ metrics }: { metrics: QueueMetricsByWindow }) => {
     vip: 'VIP',
   };
 
-  const hasData = Object.keys(metrics).length > 0;
-  
+  const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
+
   const windowData2m = metrics['2m'] || {};
   const windowData10m = metrics['10m'] || {};
   const queues2m = Object.keys(windowData2m);
   const queues10m = Object.keys(windowData10m);
 
-  const chartData = queues2m.map((q) => ({
+  const chartData2m = queues2m.map((q) => ({
     name: queueNames[q] || q,
-    calls: windowData2m[q]?.calls_count || 0,
+    calls: Math.round(windowData2m[q]?.calls_count || 0),
   }));
+
+  const chartData10m = queues10m.map((q) => ({
+    name: queueNames[q] || q,
+    calls: Math.round(windowData10m[q]?.calls_count || 0),
+  }));
+
+  const total2m = chartData2m.reduce((sum, d) => sum + d.calls, 0);
+  const total10m = chartData10m.reduce((sum, d) => sum + d.calls, 0);
 
   return (
     <div>
-      <h2 style={styles.sectionTitle}>Распределение звонков по очередям (за 2 минуты)</h2>
-      {chartData.length > 0 ? (
-        <div style={styles.chartContainer}>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-              <XAxis dataKey="name" tick={{ fontSize: 12 }} stroke="#94a3b8" />
-              <YAxis tick={{ fontSize: 12 }} stroke="#94a3b8" />
-              <Tooltip
-                contentStyle={{ backgroundColor: '#fff', border: '1px solid #e2e8f0', borderRadius: 8 }}
-              />
-              <Legend />
-              <Bar dataKey="calls" fill="#3b82f6" name="Звонков" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+        <div>
+          <h2 style={styles.sectionTitle}>Распределение по очередям (за 2 мин)</h2>
+          <p style={styles.hint}>Всего звонков: {total2m}</p>
+          {chartData2m.length > 0 ? (
+            <div style={styles.chartContainer}>
+              <ResponsiveContainer width="100%" height={280}>
+                <PieChart>
+                  <Pie
+                    data={chartData2m}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={50}
+                    outerRadius={90}
+                    paddingAngle={2}
+                    dataKey="calls"
+                    label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                    labelLine={false}
+                  >
+                    {chartData2m.map((_, index) => (
+                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={(value: number) => [value, 'Звонков']} />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <div style={styles.emptyChart}>Нет данных</div>
+          )}
         </div>
-      ) : (
-        <div style={styles.emptyChart}>Нет данных. Данные появятся после накопления звонков.</div>
-      )}
+
+        <div>
+          <h2 style={styles.sectionTitle}>Распределение по очередям (за 10 мин)</h2>
+          <p style={styles.hint}>Всего звонков: {total10m}</p>
+          {chartData10m.length > 0 ? (
+            <div style={styles.chartContainer}>
+              <ResponsiveContainer width="100%" height={280}>
+                <PieChart>
+                  <Pie
+                    data={chartData10m}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={50}
+                    outerRadius={90}
+                    paddingAngle={2}
+                    dataKey="calls"
+                    label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                    labelLine={false}
+                  >
+                    {chartData10m.map((_, index) => (
+                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={(value: number) => [value, 'Звонков']} />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <div style={styles.emptyChart}>Нет данных</div>
+          )}
+        </div>
+      </div>
 
       <h2 style={styles.sectionTitle}>Детали по очередям (за 2 минуты)</h2>
-      <p style={styles.hint}>Данные обновляются каждые 2 минуты</p>
       {queues2m.length > 0 ? (
         <div style={styles.queueGrid}>
           {queues2m.map((queue) => {
@@ -680,11 +728,10 @@ const QueuesTab = ({ metrics }: { metrics: QueueMetricsByWindow }) => {
           })}
         </div>
       ) : (
-        <div style={styles.emptyChart}>Нет данных по очередям. Данные появятся после накопления звонков за 2 минуты.</div>
+        <div style={styles.emptyChart}>Нет данных</div>
       )}
 
       <h2 style={styles.sectionTitle}>Детали по очередям (за 10 минут)</h2>
-      <p style={styles.hint}>Данные обновляются каждые 2 минуты</p>
       {queues10m.length > 0 ? (
         <div style={styles.queueGrid}>
           {queues10m.map((queue) => {
@@ -730,7 +777,7 @@ const QueuesTab = ({ metrics }: { metrics: QueueMetricsByWindow }) => {
           })}
         </div>
       ) : (
-        <div style={styles.emptyChart}>Нет данных по очередям. Данные появятся после накопления звонков за 10 минут.</div>
+        <div style={styles.emptyChart}>Нет данных</div>
       )}
     </div>
   );
@@ -755,7 +802,7 @@ const AgentsTab = ({ agents }: { agents: Agent[] }) => {
 
   return (
     <div>
-      <h2 style={styles.sectionTitle}>Список операторов ({agents.length})</h2>
+      <h2 style={styles.sectionTitle}>Список операторов</h2>
       <p style={styles.hint}>Справочник операторов контакт-центра</p>
       <div style={styles.tableContainer}>
         <table style={styles.table}>

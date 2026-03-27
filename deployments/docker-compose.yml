@@ -128,7 +128,6 @@ services:
       dockerfile: ./deployments/frontend.Dockerfile
     depends_on:
       - monitoring-api
-      - realtime-consumer
     ports:
       - "3000:80"
 

@@ -1,6 +1,6 @@
 // cmd/monitoring-api/main.go
-// Monitoring API — HTTP сервер для фронтенда.
-// Предоставляет эндпоинты для получения глобальных и realtime метрик.
+// Monitoring API — единая точка входа для фронтенда.
+// Предоставляет HTTP эндпоинты и WebSocket для realtime метрик.
 package main
 
 import (
@@ -9,8 +9,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
@@ -94,12 +96,38 @@ func main() {
 		handleTopAgents(w, r, pool)
 	}))
 
+	// WebSocket для realtime метрик (единая точка входа)
+	hub := NewHub()
+	mux.HandleFunc("/ws/realtime", func(w http.ResponseWriter, r *http.Request) {
+		handleWebSocket(w, r, hub)
+	})
+
+	// Горутина для рассылки realtime метрик из Redis
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			val, err := rdb.Get(ctx, "realtime:metrics").Result()
+			if err != nil {
+				continue
+			}
+
+			var metrics map[string]interface{}
+			if err := json.Unmarshal([]byte(val), &metrics); err != nil {
+				continue
+			}
+
+			hub.Broadcast(metrics)
+		}
+	}()
+
 	addr := ":8081"
 	if v := os.Getenv("MONITORING_HTTP_ADDR"); v != "" {
 		addr = v
 	}
 
-	log.Printf("monitoring-api: listening on %s", addr)
+	log.Printf("monitoring-api: listening on %s (HTTP + WebSocket)", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("monitoring-api: server error: %v", err)
 	}
@@ -339,14 +367,21 @@ func handleStatusDistribution(w http.ResponseWriter, r *http.Request, pool *pgxp
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	// Читаем из global_metrics для консистентности с другими метриками
 	rows, err := pool.Query(ctx, `
 		SELECT 
-			status,
-			COUNT(*) AS count
-		FROM calls
-		WHERE started_at >= NOW() - INTERVAL '1 hour'
-		GROUP BY status
-		ORDER BY count DESC
+			REPLACE(name, 'status_', '') AS status,
+			value::INT AS count
+		FROM global_metrics
+		WHERE name LIKE 'status_%' 
+			AND time_window = '10m'
+			AND queue IS NULL
+			AND calculated_at = (
+				SELECT MAX(calculated_at) 
+				FROM global_metrics 
+				WHERE name LIKE 'status_%' AND time_window = '10m'
+			)
+		ORDER BY value DESC
 	`)
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
@@ -376,21 +411,26 @@ func handleTopAgents(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool)
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	// Читаем из global_metrics для консистентности, джойним с agents для имён
 	rows, err := pool.Query(ctx, `
 		SELECT 
-			c.agent_id,
+			REPLACE(gm.name, 'agent_calls_', '') AS agent_id,
 			a.full_name,
-			COUNT(*) AS calls_count,
-			COALESCE(AVG(c.talk_seconds), 0) AS avg_talk_time,
-			COALESCE(AVG(CASE WHEN c.sla_met THEN 100.0 ELSE 0.0 END), 0) AS sla_percent,
-			COALESCE(AVG(c.customer_rating), 0) AS avg_rating
-		FROM calls c
-		JOIN agents a ON c.agent_id = a.agent_id
-		WHERE c.started_at >= NOW() - INTERVAL '1 hour'
-			AND c.agent_id IS NOT NULL
-			AND c.status IN ('completed', 'transferred')
-		GROUP BY c.agent_id, a.full_name
-		ORDER BY calls_count DESC
+			gm.value::INT AS calls_count,
+			0 AS avg_talk_time,
+			0 AS sla_percent,
+			0 AS avg_rating
+		FROM global_metrics gm
+		JOIN agents a ON REPLACE(gm.name, 'agent_calls_', '') = a.agent_id
+		WHERE gm.name LIKE 'agent_calls_%'
+			AND gm.time_window = '10m'
+			AND gm.queue IS NULL
+			AND gm.calculated_at = (
+				SELECT MAX(calculated_at) 
+				FROM global_metrics 
+				WHERE name LIKE 'agent_calls_%' AND time_window = '10m'
+			)
+		ORDER BY gm.value DESC
 		LIMIT 10
 	`)
 	if err != nil {
@@ -419,5 +459,60 @@ func handleTopAgents(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool)
 	}
 
 	json.NewEncoder(w).Encode(result)
+}
+
+// WebSocket Hub для управления подключениями
+type Hub struct {
+	mu      sync.RWMutex
+	clients map[*websocket.Conn]struct{}
+}
+
+func NewHub() *Hub {
+	return &Hub{clients: make(map[*websocket.Conn]struct{})}
+}
+
+func (h *Hub) Add(c *websocket.Conn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.clients[c] = struct{}{}
+	log.Printf("monitoring-api: WebSocket client connected, total=%d", len(h.clients))
+}
+
+func (h *Hub) Remove(c *websocket.Conn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.clients, c)
+	log.Printf("monitoring-api: WebSocket client disconnected, total=%d", len(h.clients))
+}
+
+func (h *Hub) Broadcast(msg interface{}) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for c := range h.clients {
+		if err := c.WriteJSON(msg); err != nil {
+			c.Close()
+			delete(h.clients, c)
+		}
+	}
+}
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
+
+func handleWebSocket(w http.ResponseWriter, r *http.Request, hub *Hub) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("monitoring-api: WebSocket upgrade error: %v", err)
+		return
+	}
+	hub.Add(conn)
+	defer hub.Remove(conn)
+
+	for {
+		if _, _, err := conn.NextReader(); err != nil {
+			return
+		}
+	}
 }
 
