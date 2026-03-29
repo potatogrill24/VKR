@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/example/contact-center-monitoring/internal/storage"
@@ -39,7 +40,7 @@ func main() {
 		log.Printf("analyser: initial aggregation error: %v", err)
 	}
 
-	ticker := time.NewTicker(1 * time.Minute)
+	ticker := time.NewTicker(2 * time.Minute)
 	defer ticker.Stop()
 
 	for range ticker.C {
@@ -52,29 +53,46 @@ func main() {
 func runAggregation(ctx context.Context, pool *pgxpool.Pool) error {
 	log.Println("analyser: starting aggregation...")
 
+	// Используем транзакцию с уровнем REPEATABLE READ для защиты от фантомного чтения.
+	// Это гарантирует, что все SELECT'ы внутри транзакции видят один и тот же снимок данных,
+	// даже если history-consumer вставляет новые записи параллельно.
+	txOptions := pgx.TxOptions{
+		IsoLevel: pgx.RepeatableRead,
+	}
+
+	tx, err := pool.BeginTx(ctx, txOptions)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
 	// Метрики за 2 минуты
-	if err := aggregateGlobal(ctx, pool, "2 minutes", "2m"); err != nil {
+	if err := aggregateGlobalTx(ctx, tx, "2 minutes", "2m"); err != nil {
 		log.Printf("analyser: global 2m error: %v", err)
 	}
-	if err := aggregateByQueue(ctx, pool, "2 minutes", "2m"); err != nil {
+	if err := aggregateByQueueTx(ctx, tx, "2 minutes", "2m"); err != nil {
 		log.Printf("analyser: by queue 2m error: %v", err)
 	}
 
 	// Метрики за 10 минут
-	if err := aggregateGlobal(ctx, pool, "10 minutes", "10m"); err != nil {
+	if err := aggregateGlobalTx(ctx, tx, "10 minutes", "10m"); err != nil {
 		log.Printf("analyser: global 10m error: %v", err)
 	}
-	if err := aggregateByQueue(ctx, pool, "10 minutes", "10m"); err != nil {
+	if err := aggregateByQueueTx(ctx, tx, "10 minutes", "10m"); err != nil {
 		log.Printf("analyser: by queue 10m error: %v", err)
 	}
-	if err := aggregateByStatus(ctx, pool, "10 minutes", "10m"); err != nil {
+	if err := aggregateByStatusTx(ctx, tx, "10 minutes", "10m"); err != nil {
 		log.Printf("analyser: by status 10m error: %v", err)
 	}
-	if err := aggregateTopAgents(ctx, pool, "10 minutes", "10m"); err != nil {
+	if err := aggregateTopAgentsTx(ctx, tx, "10 minutes", "10m"); err != nil {
 		log.Printf("analyser: top agents 10m error: %v", err)
 	}
 
-	// Очистка старых метрик (старше 1 часа) для предотвращения роста таблицы
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	// Очистка старых метрик (вне транзакции — не критично)
 	if _, err := pool.Exec(ctx, `DELETE FROM global_metrics WHERE calculated_at < NOW() - INTERVAL '1 hour'`); err != nil {
 		log.Printf("analyser: cleanup error: %v", err)
 	}
@@ -83,7 +101,7 @@ func runAggregation(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
-func aggregateGlobal(ctx context.Context, pool *pgxpool.Pool, interval, window string) error {
+func aggregateGlobalTx(ctx context.Context, tx pgx.Tx, interval, window string) error {
 	q := `
 INSERT INTO global_metrics (name, value, time_window, queue, calculated_at)
 SELECT name, value, $1, NULL, NOW()
@@ -125,11 +143,11 @@ FROM (
     SELECT 'avg_sentiment', COALESCE(AVG(sentiment_score), 0) FROM calls WHERE ended_at >= NOW() - $2::INTERVAL AND sentiment_score IS NOT NULL
 ) AS metrics`
 
-	_, err := pool.Exec(ctx, q, window, interval)
+	_, err := tx.Exec(ctx, q, window, interval)
 	return err
 }
 
-func aggregateByQueue(ctx context.Context, pool *pgxpool.Pool, interval, window string) error {
+func aggregateByQueueTx(ctx context.Context, tx pgx.Tx, interval, window string) error {
 	q := `
 INSERT INTO global_metrics (name, value, time_window, queue, calculated_at)
 SELECT 
@@ -181,11 +199,11 @@ FROM calls
 WHERE ended_at >= NOW() - $2::INTERVAL
 GROUP BY queue`
 
-	_, err := pool.Exec(ctx, q, window, interval)
+	_, err := tx.Exec(ctx, q, window, interval)
 	return err
 }
 
-func aggregateByStatus(ctx context.Context, pool *pgxpool.Pool, interval, window string) error {
+func aggregateByStatusTx(ctx context.Context, tx pgx.Tx, interval, window string) error {
 	q := `
 INSERT INTO global_metrics (name, value, time_window, queue, calculated_at)
 SELECT 
@@ -198,11 +216,11 @@ FROM calls
 WHERE ended_at >= NOW() - $2::INTERVAL
 GROUP BY status`
 
-	_, err := pool.Exec(ctx, q, window, interval)
+	_, err := tx.Exec(ctx, q, window, interval)
 	return err
 }
 
-func aggregateTopAgents(ctx context.Context, pool *pgxpool.Pool, interval, window string) error {
+func aggregateTopAgentsTx(ctx context.Context, tx pgx.Tx, interval, window string) error {
 	q := `
 INSERT INTO global_metrics (name, value, time_window, queue, calculated_at)
 SELECT 
@@ -217,6 +235,6 @@ WHERE c.ended_at >= NOW() - $2::INTERVAL
     AND c.status IN ('completed', 'transferred')
 GROUP BY c.agent_id`
 
-	_, err := pool.Exec(ctx, q, window, interval)
+	_, err := tx.Exec(ctx, q, window, interval)
 	return err
 }

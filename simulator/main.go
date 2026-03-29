@@ -147,7 +147,7 @@ func main() {
 			if err := sendEvent(client, *producerURL, event); err != nil {
 				log.Printf("Ошибка отправки: %v", err)
 			} else {
-				log.Printf("✓ call_id=%s queue=%s agent=%s status=%s wait=%ds talk=%ds SLA=%v",
+				log.Printf(" call_id=%s queue=%s agent=%s status=%s wait=%ds talk=%ds SLA=%v",
 					event.CallID[:8], event.Queue, event.AgentID, event.Status,
 					event.WaitSeconds, event.TalkSeconds, event.SlaMet)
 			}
@@ -402,10 +402,10 @@ func generateTalkTime(status string) int {
 	case "abandoned", "voicemail":
 		return 0
 	case "transferred":
-		return 20 + rand.Intn(40) // 20-60 сек перед переводом
+		return 15 + rand.Intn(30) // 15-45 сек перед переводом
 	default:
-		// Нормальный разговор: 1-4 минуты (реалистично для демо)
-		return 60 + rand.Intn(180)
+		// Нормальный разговор: 30 сек - 1.5 минуты
+		return 30 + rand.Intn(60)
 	}
 }
 

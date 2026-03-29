@@ -184,13 +184,20 @@ func handleLatestMetrics(w http.ResponseWriter, r *http.Request, pool *pgxpool.P
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// Получаем последние значения каждой метрики для каждого окна из global_metrics
+	// Получаем все метрики для последнего calculated_at каждого окна
+	// Это гарантирует, что все метрики одного окна из одного цикла агрегации
 	rows, err := pool.Query(ctx, `
-		SELECT DISTINCT ON (name, time_window) 
-			name, value, time_window, calculated_at
-		FROM global_metrics
-		WHERE queue IS NULL
-		ORDER BY name, time_window, calculated_at DESC
+		WITH latest_calc AS (
+			SELECT MAX(calculated_at) as calc_at, time_window
+			FROM global_metrics
+			WHERE queue IS NULL AND name = 'calls_count'
+			GROUP BY time_window
+		)
+		SELECT gm.name, gm.value, gm.time_window, gm.calculated_at
+		FROM global_metrics gm
+		JOIN latest_calc lc ON gm.time_window = lc.time_window AND gm.calculated_at = lc.calc_at
+		WHERE gm.queue IS NULL
+		ORDER BY gm.time_window, gm.name
 	`)
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
@@ -221,14 +228,20 @@ func handleQueueMetrics(w http.ResponseWriter, r *http.Request, pool *pgxpool.Po
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// Читаем метрики по очередям из global_metrics (заполняется analyser'ом)
-	// Это обеспечивает консистентность с глобальными метриками
+	// Читаем метрики по очередям, используя тот же calculated_at что и глобальные метрики
+	// Это гарантирует консистентность: сумма по очередям = calls_count
 	rows, err := pool.Query(ctx, `
-		SELECT DISTINCT ON (time_window, queue, name) 
-			time_window, queue, name, value
-		FROM global_metrics
-		WHERE queue IS NOT NULL AND time_window IN ('2m', '10m')
-		ORDER BY time_window, queue, name, calculated_at DESC
+		WITH latest_calc AS (
+			SELECT MAX(calculated_at) as calc_at, time_window
+			FROM global_metrics
+			WHERE queue IS NULL AND name = 'calls_count' AND time_window IN ('2m', '10m')
+			GROUP BY time_window
+		)
+		SELECT gm.time_window, gm.queue, gm.name, gm.value
+		FROM global_metrics gm
+		JOIN latest_calc lc ON gm.time_window = lc.time_window AND gm.calculated_at = lc.calc_at
+		WHERE gm.queue IS NOT NULL
+		ORDER BY gm.time_window, gm.queue, gm.name
 	`)
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)

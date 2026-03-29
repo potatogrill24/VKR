@@ -146,16 +146,19 @@ export const App = () => {
   }, []);
 
   useEffect(() => {
-    fetchLatestMetrics();
-    fetchQueueMetrics();
-    fetchAgents();
-    fetchAnalytics();
+    // Загружаем все данные одновременно для консистентности
+    const fetchAll = async () => {
+      await Promise.all([
+        fetchLatestMetrics(),
+        fetchQueueMetrics(),
+        fetchAnalytics(),
+      ]);
+    };
 
-    const interval = setInterval(() => {
-      fetchLatestMetrics();
-      fetchQueueMetrics();
-      fetchAnalytics();
-    }, 120000); // Обновление каждые 2 минуты
+    fetchAgents();
+    fetchAll();
+
+    const interval = setInterval(fetchAll, 120000); // Обновление каждые 2 минуты
 
     return () => clearInterval(interval);
   }, [fetchLatestMetrics, fetchQueueMetrics, fetchAgents, fetchAnalytics]);
