@@ -41,31 +41,22 @@ func WaitForDB(ctx context.Context, dsn string, maxAttempts int) (*pgxpool.Pool,
 
 // CheckSchema проверяет, что необходимые таблицы существуют
 func CheckSchema(ctx context.Context, pool *pgxpool.Pool) error {
-	var exists bool
-	err := pool.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT FROM information_schema.tables 
-			WHERE table_name = 'calls'
-		)
-	`).Scan(&exists)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		log.Println("WARNING: Table 'calls' does not exist. Run init-db scripts.")
-	}
+	tables := []string{"calls", "agents", "queues", "global_metrics"}
 
-	err = pool.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT FROM information_schema.tables 
-			WHERE table_name = 'agents'
-		)
-	`).Scan(&exists)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		log.Println("WARNING: Table 'agents' does not exist. Run init-db scripts.")
+	for _, table := range tables {
+		var exists bool
+		err := pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT FROM information_schema.tables 
+				WHERE table_name = $1
+			)
+		`, table).Scan(&exists)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			log.Printf("WARNING: Table '%s' does not exist. Run init-db scripts.", table)
+		}
 	}
 
 	log.Println("Database schema check completed")

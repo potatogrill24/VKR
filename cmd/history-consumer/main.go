@@ -95,7 +95,7 @@ INSERT INTO calls (
     call_id,
     agent_id,
     customer_phone,
-    queue,
+    queue_id,
     call_type,
     started_at,
     answered_at,

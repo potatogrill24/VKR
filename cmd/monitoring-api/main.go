@@ -153,9 +153,9 @@ func handleGlobalMetrics(w http.ResponseWriter, r *http.Request, pool *pgxpool.P
 	defer cancel()
 
 	rows, err := pool.Query(ctx, `
-		SELECT id, name, value, time_window, queue, calculated_at
+		SELECT id, name, value, time_window, queue_id, calculated_at
 		FROM global_metrics
-		WHERE queue IS NULL
+		WHERE queue_id IS NULL
 		ORDER BY calculated_at DESC
 		LIMIT 100
 	`)
@@ -190,13 +190,13 @@ func handleLatestMetrics(w http.ResponseWriter, r *http.Request, pool *pgxpool.P
 		WITH latest_calc AS (
 			SELECT MAX(calculated_at) as calc_at, time_window
 			FROM global_metrics
-			WHERE queue IS NULL AND name = 'calls_count'
+			WHERE queue_id IS NULL AND name = 'calls_count'
 			GROUP BY time_window
 		)
 		SELECT gm.name, gm.value, gm.time_window, gm.calculated_at
 		FROM global_metrics gm
 		JOIN latest_calc lc ON gm.time_window = lc.time_window AND gm.calculated_at = lc.calc_at
-		WHERE gm.queue IS NULL
+		WHERE gm.queue_id IS NULL
 		ORDER BY gm.time_window, gm.name
 	`)
 	if err != nil {
@@ -234,14 +234,14 @@ func handleQueueMetrics(w http.ResponseWriter, r *http.Request, pool *pgxpool.Po
 		WITH latest_calc AS (
 			SELECT MAX(calculated_at) as calc_at, time_window
 			FROM global_metrics
-			WHERE queue IS NULL AND name = 'calls_count' AND time_window IN ('2m', '10m')
+			WHERE queue_id IS NULL AND name = 'calls_count' AND time_window IN ('2m', '10m')
 			GROUP BY time_window
 		)
-		SELECT gm.time_window, gm.queue, gm.name, gm.value
+		SELECT gm.time_window, gm.queue_id, gm.name, gm.value
 		FROM global_metrics gm
 		JOIN latest_calc lc ON gm.time_window = lc.time_window AND gm.calculated_at = lc.calc_at
-		WHERE gm.queue IS NOT NULL
-		ORDER BY gm.time_window, gm.queue, gm.name
+		WHERE gm.queue_id IS NOT NULL
+		ORDER BY gm.time_window, gm.queue_id, gm.name
 	`)
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
@@ -388,7 +388,7 @@ func handleStatusDistribution(w http.ResponseWriter, r *http.Request, pool *pgxp
 		FROM global_metrics
 		WHERE name LIKE 'status_%' 
 			AND time_window = '10m'
-			AND queue IS NULL
+			AND queue_id IS NULL
 			AND calculated_at = (
 				SELECT MAX(calculated_at) 
 				FROM global_metrics 
@@ -437,7 +437,7 @@ func handleTopAgents(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool)
 		JOIN agents a ON REPLACE(gm.name, 'agent_calls_', '') = a.agent_id
 		WHERE gm.name LIKE 'agent_calls_%'
 			AND gm.time_window = '10m'
-			AND gm.queue IS NULL
+			AND gm.queue_id IS NULL
 			AND gm.calculated_at = (
 				SELECT MAX(calculated_at) 
 				FROM global_metrics 

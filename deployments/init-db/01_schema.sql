@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS calls (
     call_id VARCHAR(50) UNIQUE NOT NULL,
     agent_id VARCHAR(50) REFERENCES agents(agent_id),
     customer_phone VARCHAR(20),
-    queue VARCHAR(50) NOT NULL,
+    queue_id VARCHAR(50) NOT NULL REFERENCES queues(queue_id),
     call_type VARCHAR(20) NOT NULL DEFAULT 'inbound',
     started_at TIMESTAMPTZ NOT NULL,
     answered_at TIMESTAMPTZ,
@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS global_metrics (
     name VARCHAR(50) NOT NULL,
     value FLOAT NOT NULL,
     time_window VARCHAR(10) NOT NULL,
-    queue VARCHAR(50),
+    queue_id VARCHAR(50) REFERENCES queues(queue_id),
     calculated_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -69,9 +69,9 @@ CREATE TABLE IF NOT EXISTS global_metrics (
 -- Индексы для оптимизации запросов
 CREATE INDEX IF NOT EXISTS idx_calls_started_at ON calls(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_calls_agent_id ON calls(agent_id);
-CREATE INDEX IF NOT EXISTS idx_calls_queue ON calls(queue);
+CREATE INDEX IF NOT EXISTS idx_calls_queue_id ON calls(queue_id);
 CREATE INDEX IF NOT EXISTS idx_calls_status ON calls(status);
 CREATE INDEX IF NOT EXISTS idx_calls_agent_started ON calls(agent_id, started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_calls_queue_started ON calls(queue, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_calls_queue_id_started ON calls(queue_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_global_metrics_calculated_at ON global_metrics(calculated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_global_metrics_name_queue ON global_metrics(name, queue);
+CREATE INDEX IF NOT EXISTS idx_global_metrics_name_queue_id ON global_metrics(name, queue_id);

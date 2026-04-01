@@ -103,7 +103,7 @@ func runAggregation(ctx context.Context, pool *pgxpool.Pool) error {
 
 func aggregateGlobalTx(ctx context.Context, tx pgx.Tx, interval, window string) error {
 	q := `
-INSERT INTO global_metrics (name, value, time_window, queue, calculated_at)
+INSERT INTO global_metrics (name, value, time_window, queue_id, calculated_at)
 SELECT name, value, $1, NULL, NOW()
 FROM (
     SELECT 'calls_count' AS name, COUNT(*)::FLOAT8 AS value FROM calls WHERE ended_at >= NOW() - $2::INTERVAL
@@ -149,16 +149,16 @@ FROM (
 
 func aggregateByQueueTx(ctx context.Context, tx pgx.Tx, interval, window string) error {
 	q := `
-INSERT INTO global_metrics (name, value, time_window, queue, calculated_at)
+INSERT INTO global_metrics (name, value, time_window, queue_id, calculated_at)
 SELECT 
     'calls_count' AS name,
     COUNT(*)::FLOAT8 AS value,
     $1 AS time_window,
-    queue,
+    queue_id,
     NOW() AS calculated_at
 FROM calls 
 WHERE ended_at >= NOW() - $2::INTERVAL
-GROUP BY queue
+GROUP BY queue_id
 
 UNION ALL
 
@@ -166,11 +166,11 @@ SELECT
     'avg_wait_seconds',
     COALESCE(AVG(wait_seconds), 0),
     $1,
-    queue,
+    queue_id,
     NOW()
 FROM calls 
 WHERE ended_at >= NOW() - $2::INTERVAL
-GROUP BY queue
+GROUP BY queue_id
 
 UNION ALL
 
@@ -178,11 +178,11 @@ SELECT
     'sla_percent',
     COALESCE(AVG(CASE WHEN sla_met THEN 100.0 ELSE 0.0 END), 0),
     $1,
-    queue,
+    queue_id,
     NOW()
 FROM calls 
 WHERE ended_at >= NOW() - $2::INTERVAL
-GROUP BY queue
+GROUP BY queue_id
 
 UNION ALL
 
@@ -193,11 +193,11 @@ SELECT
         ELSE 0 
     END,
     $1,
-    queue,
+    queue_id,
     NOW()
 FROM calls 
 WHERE ended_at >= NOW() - $2::INTERVAL
-GROUP BY queue`
+GROUP BY queue_id`
 
 	_, err := tx.Exec(ctx, q, window, interval)
 	return err
@@ -205,15 +205,15 @@ GROUP BY queue`
 
 func aggregateByStatusTx(ctx context.Context, tx pgx.Tx, interval, window string) error {
 	q := `
-INSERT INTO global_metrics (name, value, time_window, queue, calculated_at)
+INSERT INTO global_metrics (name, value, time_window, queue_id, calculated_at)
 SELECT 
     'status_' || status AS name,
     COUNT(*)::FLOAT8 AS value,
     $1 AS time_window,
-    NULL AS queue,
+    NULL AS queue_id,
     NOW() AS calculated_at
 FROM calls 
-WHERE ended_at >= NOW() - $2::INTERVAL
+WHERE ended_at >= NOW() - $2::INTERVAL 
 GROUP BY status`
 
 	_, err := tx.Exec(ctx, q, window, interval)
@@ -222,12 +222,12 @@ GROUP BY status`
 
 func aggregateTopAgentsTx(ctx context.Context, tx pgx.Tx, interval, window string) error {
 	q := `
-INSERT INTO global_metrics (name, value, time_window, queue, calculated_at)
+INSERT INTO global_metrics (name, value, time_window, queue_id, calculated_at)
 SELECT 
     'agent_calls_' || c.agent_id AS name,
     COUNT(*)::FLOAT8 AS value,
     $1 AS time_window,
-    NULL AS queue,
+    NULL AS queue_id,
     NOW() AS calculated_at
 FROM calls c
 WHERE c.ended_at >= NOW() - $2::INTERVAL
