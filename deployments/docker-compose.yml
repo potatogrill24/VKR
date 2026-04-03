@@ -1,27 +1,27 @@
 name: monitoring-platform
 
 services:
-  ccm-zookeeper:
+  zookeeper:
     image: confluentinc/cp-zookeeper:7.6.0
-    container_name: ccm-zookeeper
+    container_name: zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
     ports:
       - "2181:2181"
 
-  ccm-kafka:
+  kafka:
     image: confluentinc/cp-kafka:7.6.0
-    container_name: ccm-kafka
+    container_name: kafka
     depends_on:
-      - ccm-zookeeper
+      - zookeeper
     ports:
       - "9092:9092"
     environment:
       KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: ccm-zookeeper:2181
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://ccm-kafka:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
     healthcheck:
       test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
@@ -29,9 +29,9 @@ services:
       timeout: 10s
       retries: 5
 
-  ccm-postgres:
+  postgres:
     image: postgres:16
-    container_name: ccm-postgres
+    container_name: postgres
     environment:
       POSTGRES_DB: ccm
       POSTGRES_USER: ccm
@@ -47,9 +47,9 @@ services:
       timeout: 5s
       retries: 5
 
-  ccm-redis:
+  redis:
     image: redis:7
-    container_name: ccm-redis
+    container_name: redis
     ports:
       - "6379:6379"
     healthcheck:
@@ -58,80 +58,80 @@ services:
       timeout: 3s
       retries: 5
 
-  ccm-producer:
+  producer:
     build:
       context: ..
       dockerfile: ./deployments/producer.Dockerfile
-    container_name: ccm-producer
+    container_name: producer
     depends_on:
-      ccm-kafka:
+      kafka:
         condition: service_healthy
     environment:
-      KAFKA_BROKERS: ccm-kafka:9092
+      KAFKA_BROKERS: kafka:9092
       KAFKA_CALLS_TOPIC: ccm.calls
       PRODUCER_HTTP_ADDR: ":8082"
     ports:
       - "8082:8082"
     restart: on-failure
 
-  ccm-realtime-consumer:
+  realtime-consumer:
     build:
       context: ..
       dockerfile: ./deployments/realtime-consumer.Dockerfile
-    container_name: ccm-realtime-consumer
+    container_name: realtime-consumer
     depends_on:
-      ccm-kafka:
+      kafka:
         condition: service_healthy
-      ccm-redis:
+      redis:
         condition: service_healthy
     environment:
-      KAFKA_BROKERS: ccm-kafka:9092
+      KAFKA_BROKERS: kafka:9092
       KAFKA_CALLS_TOPIC: ccm.calls
-      REDIS_ADDR: ccm-redis:6379
+      REDIS_ADDR: redis:6379
     restart: on-failure
 
-  ccm-analyser:
+  analyser:
     build:
       context: ..
       dockerfile: ./deployments/analyser.Dockerfile
-    container_name: ccm-analyser
+    container_name: analyser
     depends_on:
-      ccm-postgres:
+      postgres:
         condition: service_healthy
     environment:
-      ANALYSER_PG_DSN: postgres://ccm:ccm@ccm-postgres:5432/ccm?sslmode=disable
+      ANALYSER_PG_DSN: postgres://ccm:ccm@postgres:5432/ccm?sslmode=disable
     restart: on-failure
 
-  ccm-history-consumer:
+  history-consumer:
     build:
       context: ..
       dockerfile: ./deployments/history-consumer.Dockerfile
-    container_name: ccm-history-consumer
+    container_name: history-consumer
     depends_on:
-      ccm-postgres:
+      postgres:
         condition: service_healthy
-      ccm-kafka:
+      kafka:
         condition: service_healthy
     environment:
-      KAFKA_BROKERS: ccm-kafka:9092
+      KAFKA_BROKERS: kafka:9092
       KAFKA_CALLS_TOPIC: ccm.calls
-      HISTORY_PG_DSN: postgres://ccm:ccm@ccm-postgres:5432/ccm?sslmode=disable
+      HISTORY_PG_DSN: postgres://ccm:ccm@postgres:5432/ccm?sslmode=disable
     restart: on-failure
 
-  ccm-monitoring-api:
+  monitoring-api:
     build:
       context: ..
       dockerfile: ./deployments/monitoring-api.Dockerfile
-    container_name: ccm-monitoring-api
+    container_name: monitoring-api
     depends_on:
-      ccm-postgres:
+      postgres:
         condition: service_healthy
-      ccm-redis:
+      redis:
         condition: service_healthy
     environment:
-      MONITORING_PG_DSN: postgres://ccm:ccm@ccm-postgres:5432/ccm?sslmode=disable
+      MONITORING_PG_DSN: postgres://ccm:ccm@postgres:5432/ccm?sslmode=disable
       MONITORING_HTTP_ADDR: ":8081"
-      REDIS_ADDR: ccm-redis:6379
+      REDIS_ADDR: redis:6379
     ports:
       - "8081:8081"
     healthcheck:
@@ -140,13 +140,13 @@ services:
       timeout: 3s
       retries: 5
 
-  ccm-dashboard:
+  dashboard:
     build:
       context: ..
       dockerfile: ./deployments/frontend.Dockerfile
-    container_name: ccm-dashboard
+    container_name: dashboard
     depends_on:
-      ccm-monitoring-api:
+      monitoring-api:
         condition: service_healthy
     ports:
       - "3000:80"

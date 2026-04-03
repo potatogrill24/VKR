@@ -113,7 +113,6 @@ func main() {
 	client := &http.Client{Timeout: 5 * time.Second}
 
 	log.Printf("Симулятор запущен: url=%s, interval=%d сек", *producerURL, *intervalSec)
-	log.Println("Генерация реалистичных данных контакт-центра (1-4 параллельных звонка)...")
 
 	eventCount := 0
 	for {
@@ -166,7 +165,7 @@ func main() {
 		}
 		
 		if sentInBatch > 0 {
-			log.Printf("--- Отправлено %d звонков в пакете, всего: %d ---", sentInBatch, eventCount)
+			log.Printf("Отправлено %d звонков в пакете, всего: %d", sentInBatch, eventCount)
 		}
 	}
 }
