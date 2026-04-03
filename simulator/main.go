@@ -100,7 +100,6 @@ func main() {
 	var (
 		producerURL = flag.String("url", "http://localhost:8082/api/events", "URL producer API")
 		intervalSec = flag.Int("interval", 7, "Средний интервал между звонками (секунды)")
-		dryRun      = flag.Bool("dry-run", false, "Только печатать JSON, не отправлять")
 		totalEvents = flag.Int("total", 0, "Общее количество событий (0 = бесконечно)")
 	)
 	flag.Parse()
@@ -114,7 +113,7 @@ func main() {
 	client := &http.Client{Timeout: 5 * time.Second}
 
 	log.Printf("Симулятор запущен: url=%s, interval=%d сек", *producerURL, *intervalSec)
-	log.Println("Генерация реалистичных данных контакт-центра...")
+	log.Println("Генерация реалистичных данных контакт-центра (1-4 параллельных звонка)...")
 
 	eventCount := 0
 	for {
@@ -127,32 +126,48 @@ func main() {
 		interval := time.Duration(float64(*intervalSec) * (0.5 + rand.Float64()))
 		time.Sleep(interval * time.Second)
 
-		// Выбираем свободного оператора
-		agent := selectAvailableAgent(agents)
-		if agent == nil {
-			log.Println("Все операторы заняты, пропускаем звонок")
+		// Генерируем от 1 до 4 параллельных звонков
+		numCalls := 1 + rand.Intn(4)
+		
+		// Собираем свободных операторов
+		availableAgents := getAvailableAgents(agents)
+		
+		// Ограничиваем количество звонков числом свободных операторов
+		// (для звонков abandoned/voicemail оператор не нужен, но для реализма ограничим)
+		if numCalls > len(availableAgents) && len(availableAgents) > 0 {
+			numCalls = len(availableAgents)
+		}
+		
+		if len(availableAgents) == 0 {
+			log.Println("Все операторы заняты, пропускаем цикл")
 			continue
 		}
 
-		// Генерируем событие
-		event := generateRealisticCall(agent)
+		// Генерируем и отправляем звонки
+		sentInBatch := 0
+		for i := 0; i < numCalls && i < len(availableAgents); i++ {
+			agent := availableAgents[i]
+			
+			// Генерируем событие
+			event := generateRealisticCall(agent)
 
-		// Обновляем состояние оператора
-		updateAgentState(agent, event)
+			// Обновляем состояние оператора
+			updateAgentState(agent, event)
 
-		if *dryRun {
-			data, _ := json.MarshalIndent(event, "", "  ")
-			fmt.Println(string(data))
-		} else {
 			if err := sendEvent(client, *producerURL, event); err != nil {
 				log.Printf("Ошибка отправки: %v", err)
 			} else {
-				log.Printf(" call_id=%s queue=%s agent=%s status=%s wait=%ds talk=%ds SLA=%v",
-					event.CallID[:8], event.Queue, event.AgentID, event.Status,
+				log.Printf("  [%d/%d] call_id=%s queue=%s agent=%s status=%s wait=%ds talk=%ds SLA=%v",
+					i+1, numCalls, event.CallID[:8], event.Queue, event.AgentID, event.Status,
 					event.WaitSeconds, event.TalkSeconds, event.SlaMet)
+				sentInBatch++
 			}
+			eventCount++
 		}
-		eventCount++
+		
+		if sentInBatch > 0 {
+			log.Printf("--- Отправлено %d звонков в пакете, всего: %d ---", sentInBatch, eventCount)
+		}
 	}
 }
 
@@ -199,7 +214,7 @@ func initAgents() []*Agent {
 	return agents
 }
 
-func selectAvailableAgent(agents []*Agent) *Agent {
+func getAvailableAgents(agents []*Agent) []*Agent {
 	now := time.Now()
 	
 	// Освобождаем операторов, у которых прошло достаточно времени
@@ -209,7 +224,7 @@ func selectAvailableAgent(agents []*Agent) *Agent {
 		}
 	}
 
-	// Выбираем случайного свободного оператора
+	// Собираем всех свободных операторов
 	available := make([]*Agent, 0)
 	for _, a := range agents {
 		if !a.IsBusy {
@@ -217,11 +232,12 @@ func selectAvailableAgent(agents []*Agent) *Agent {
 		}
 	}
 
-	if len(available) == 0 {
-		return nil
-	}
+	// Перемешиваем для случайного выбора
+	rand.Shuffle(len(available), func(i, j int) {
+		available[i], available[j] = available[j], available[i]
+	})
 
-	return available[rand.Intn(len(available))]
+	return available
 }
 
 func updateAgentState(agent *Agent, event *CallEvent) {

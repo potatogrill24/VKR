@@ -1,25 +1,26 @@
 // cmd/realtime-consumer/main.go
-// Realtime Consumer — читает события из Kafka, вычисляет метрики реального времени,
-// сохраняет в Redis и рассылает через WebSocket подключённым клиентам.
+// Realtime Consumer — читает события из Kafka, вычисляет метрики реального времени
+// и сохраняет их в Redis для последующего чтения сервисом Monitoring API.
 package main
 
 import (
 	"context"
 	"encoding/json"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/example/contact-center-monitoring/internal/kafka"
 	"github.com/example/contact-center-monitoring/internal/models"
 )
+
+// Общее количество операторов в контакт-центре
+const TotalAgents = 20
 
 // MetricsAggregator хранит состояние для вычисления realtime-метрик
 type MetricsAggregator struct {
@@ -30,9 +31,6 @@ type MetricsAggregator struct {
 
 	// Состояние операторов с временем последнего события
 	agentLastEvent map[string]agentEvent
-
-	// Все известные операторы
-	knownAgents map[string]bool
 }
 
 type callRecord struct {
@@ -55,7 +53,6 @@ func NewMetricsAggregator() *MetricsAggregator {
 	return &MetricsAggregator{
 		recentCalls:    make([]callRecord, 0),
 		agentLastEvent: make(map[string]agentEvent),
-		knownAgents:    make(map[string]bool),
 	}
 }
 
@@ -77,7 +74,6 @@ func (a *MetricsAggregator) AddEvent(evt *models.CallEvent) {
 
 	// Запоминаем оператора и его последнее событие
 	if evt.AgentID != "" {
-		a.knownAgents[evt.AgentID] = true
 		a.agentLastEvent[evt.AgentID] = agentEvent{
 			timestamp:   now,
 			status:      evt.Status,
@@ -107,17 +103,9 @@ func (a *MetricsAggregator) GetMetrics() models.RealtimeMetrics {
 	}
 
 	// Подсчёт состояний операторов на основе времени последнего события
-	// Логика: после завершения звонка оператор некоторое время "занят"
-	// - talk_seconds секунд — "на линии" (симуляция)
-	// - wrap_up_seconds секунд — "в обработке"
-	// - после этого — "свободен"
-	for agentID := range a.knownAgents {
-		evt, exists := a.agentLastEvent[agentID]
-		if !exists {
-			metrics.AgentsAvailable++
-			continue
-		}
-
+	// Логика: начинаем с TotalAgents свободных операторов,
+	// затем вычитаем тех, кто сейчас занят (на линии или в обработке)
+	for _, evt := range a.agentLastEvent {
 		// Сколько времени прошло с момента события
 		elapsed := now.Sub(evt.timestamp)
 
@@ -127,18 +115,22 @@ func (a *MetricsAggregator) GetMetrics() models.RealtimeMetrics {
 		wrapDuration := time.Duration(evt.wrapSeconds) * time.Second / 10
 
 		if evt.status == "abandoned" || evt.status == "voicemail" {
-			// Эти звонки не обслуживались оператором
-			metrics.AgentsAvailable++
+			// Эти звонки не обслуживались оператором — он свободен
+			continue
 		} else if elapsed < talkDuration {
 			// Оператор ещё "на линии"
 			metrics.AgentsInCall++
 		} else if elapsed < talkDuration+wrapDuration {
 			// Оператор в послеразговорной обработке
 			metrics.AgentsWrapUp++
-		} else {
-			// Оператор свободен
-			metrics.AgentsAvailable++
 		}
+		// Если elapsed >= talkDuration+wrapDuration, оператор свободен (не считаем)
+	}
+
+	// Свободные = всего - занятые - в обработке
+	metrics.AgentsAvailable = TotalAgents - metrics.AgentsInCall - metrics.AgentsWrapUp
+	if metrics.AgentsAvailable < 0 {
+		metrics.AgentsAvailable = 0
 	}
 
 	// Метрики за последние 5 минут
@@ -167,13 +159,6 @@ func (a *MetricsAggregator) GetMetrics() models.RealtimeMetrics {
 		metrics.AbandonmentRate = float64(abandonedCount) / float64(len(a.recentCalls)) * 100
 	}
 
-	// Симуляция очереди: чем больше звонков и меньше свободных операторов, тем больше очередь
-	if metrics.AgentsAvailable > 0 {
-		metrics.CallsInQueue = metrics.CallsPerMinute / 2
-	} else {
-		metrics.CallsInQueue = metrics.CallsPerMinute
-	}
-
 	return metrics
 }
 
@@ -181,50 +166,6 @@ func (a *MetricsAggregator) EventCount() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return len(a.recentCalls)
-}
-
-type Hub struct {
-	mu      sync.RWMutex
-	clients map[*websocket.Conn]struct{}
-}
-
-func NewHub() *Hub {
-	return &Hub{clients: make(map[*websocket.Conn]struct{})}
-}
-
-func (h *Hub) Add(c *websocket.Conn) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.clients[c] = struct{}{}
-	log.Printf("realtime-consumer: client connected, total=%d", len(h.clients))
-}
-
-func (h *Hub) Remove(c *websocket.Conn) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	delete(h.clients, c)
-	log.Printf("realtime-consumer: client disconnected, total=%d", len(h.clients))
-}
-
-func (h *Hub) Broadcast(msg interface{}) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for c := range h.clients {
-		if err := c.WriteJSON(msg); err != nil {
-			c.Close()
-			delete(h.clients, c)
-		}
-	}
-}
-
-func (h *Hub) ClientCount() int {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return len(h.clients)
-}
-
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
 func main() {
@@ -242,10 +183,9 @@ func main() {
 	reader := kafka.NewReader(topic, "realtime-consumer")
 	defer reader.Close()
 
-	hub := NewHub()
 	aggregator := NewMetricsAggregator()
 
-	log.Printf("realtime-consumer: connecting to Kafka topic=%s, group=realtime-consumer", topic)
+	log.Printf("realtime-consumer: started, topic=%s, redis=%s", topic, redisAddr)
 
 	// Горутина для чтения событий из Kafka
 	go func() {
@@ -287,7 +227,7 @@ func main() {
 		}
 	}()
 
-	// Горутина для периодической рассылки метрик
+	// Горутина для периодического сохранения метрик в Redis
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
@@ -303,55 +243,7 @@ func main() {
 				if err := saveMetricsToRedis(ctx, rdb, &metrics); err != nil {
 					log.Printf("realtime-consumer: redis error: %v", err)
 				}
-
-				// Рассылаем через WebSocket
-				if hub.ClientCount() > 0 {
-					hub.Broadcast(metrics)
-				}
 			}
-		}
-	}()
-
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("/ws/realtime", func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			log.Printf("websocket upgrade error: %v", err)
-			return
-		}
-		hub.Add(conn)
-		defer hub.Remove(conn)
-
-		// Сразу отправляем текущие метрики
-		conn.WriteJSON(aggregator.GetMetrics())
-
-		for {
-			if _, _, err := conn.NextReader(); err != nil {
-				return
-			}
-		}
-	})
-
-	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":  "ok",
-			"clients": hub.ClientCount(),
-		})
-	})
-
-	addr := ":8080"
-	if v := os.Getenv("REALTIME_HTTP_ADDR"); v != "" {
-		addr = v
-	}
-
-	srv := &http.Server{Addr: addr, Handler: mux}
-
-	go func() {
-		log.Printf("realtime-consumer: http listening on %s", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("http server error: %v", err)
 		}
 	}()
 
@@ -360,7 +252,7 @@ func main() {
 	<-sigCh
 
 	log.Println("realtime-consumer: shutting down...")
-	srv.Shutdown(context.Background())
+	cancel()
 }
 
 func saveMetricsToRedis(ctx context.Context, rdb *redis.Client, m *models.RealtimeMetrics) error {

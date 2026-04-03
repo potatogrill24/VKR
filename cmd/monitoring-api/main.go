@@ -71,11 +71,6 @@ func main() {
 		handleQueueMetrics(w, r, pool)
 	}))
 
-	// Realtime метрики из Redis
-	mux.HandleFunc("/api/metrics/realtime", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		handleRealtimeMetrics(w, r, rdb)
-	}))
-
 	// Список операторов
 	mux.HandleFunc("/api/agents", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		handleAgents(w, r, pool)
@@ -221,6 +216,26 @@ func handleLatestMetrics(w http.ResponseWriter, r *http.Request, pool *pgxpool.P
 		result[window]["calculated_at"] = calculatedAt
 	}
 
+	// Если данных нет, возвращаем структуру с нулями для корректного отображения на фронтенде
+	if len(result) == 0 {
+		now := time.Now()
+		defaultMetrics := map[string]interface{}{
+			"calls_count":         0,
+			"avg_wait_seconds":    0,
+			"avg_talk_seconds":    0,
+			"avg_handle_time":     0,
+			"sla_percent":         0,
+			"abandonment_rate":    0,
+			"transfer_rate":       0,
+			"fcr_rate":            0,
+			"avg_customer_rating": 0,
+			"avg_sentiment":       0,
+			"calculated_at":       now,
+		}
+		result["2m"] = defaultMetrics
+		result["10m"] = defaultMetrics
+	}
+
 	json.NewEncoder(w).Encode(result)
 }
 
@@ -268,31 +283,6 @@ func handleQueueMetrics(w http.ResponseWriter, r *http.Request, pool *pgxpool.Po
 	}
 
 	json.NewEncoder(w).Encode(result)
-}
-
-func handleRealtimeMetrics(w http.ResponseWriter, r *http.Request, rdb *redis.Client) {
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-	defer cancel()
-
-	val, err := rdb.Get(ctx, "realtime:metrics").Result()
-	if err != nil {
-		if err == redis.Nil {
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"agents_available": 0,
-				"agents_in_call":   0,
-				"agents_wrap_up":   0,
-				"calls_in_queue":   0,
-				"service_level":    0,
-				"updated_at":       time.Now(),
-			})
-			return
-		}
-		http.Error(w, "redis error", http.StatusInternalServerError)
-		log.Printf("monitoring-api: redis error: %v", err)
-		return
-	}
-
-	w.Write([]byte(val))
 }
 
 func handleAgents(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool) {
@@ -528,4 +518,3 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, hub *Hub) {
 		}
 	}
 }
-

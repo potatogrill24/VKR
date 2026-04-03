@@ -9,7 +9,8 @@ COPY . .
 
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o monitoring-api ./cmd/monitoring-api
 
-FROM gcr.io/distroless/base-debian12
+FROM alpine:3.19
+RUN apk add --no-cache ca-certificates wget
 WORKDIR /app
 COPY --from=builder /app/monitoring-api /app/monitoring-api
 

@@ -15,7 +15,7 @@
 |--------|------|----------|
 | **producer** | 8082 | HTTP API для приёма событий от внешних систем и публикации в Kafka |
 | **history-consumer** | — | Читает события из Kafka и записывает в PostgreSQL (таблица `calls`) |
-| **realtime-consumer** | 8080 | Вычисляет realtime-метрики, сохраняет в Redis |
+| **realtime-consumer** | — | Вычисляет realtime-метрики, сохраняет в Redis |
 | **analyser** | — | Периодически агрегирует данные из `calls` в `global_metrics` |
 | **monitoring-api** | 8081 | HTTP API, WebSocket для фронтенда: глобальные метрики, метрики в реальном времени, операторы, очереди |
 | **frontend** | 3000 | React SPA с дашбордом мониторинга |
@@ -64,7 +64,6 @@
 | `agents_available` | Свободные операторы |
 | `agents_in_call` | Операторы на линии |
 | `agents_wrap_up` | Операторы в послеразговорной обработке |
-| `calls_in_queue` | Звонки в очереди |
 | `longest_wait_sec` | Максимальное время ожидания |
 | `avg_wait_sec` | Среднее время ожидания |
 | `service_level` | % звонков отвеченных в SLA |
@@ -136,7 +135,7 @@ docker-compose down -v
 ├── cmd/                          # Go-сервисы
 │   ├── producer/                 # HTTP API → Kafka
 │   ├── history-consumer/         # Kafka → PostgreSQL
-│   ├── realtime-consumer/        # Kafka → Redis + WebSocket
+│   ├── realtime-consumer/        # Kafka → Redis
 │   ├── analyser/                 # PostgreSQL агрегация
 │   └── monitoring-api/           # HTTP API для фронтенда
 ├── internal/                     # Общие пакеты

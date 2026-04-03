@@ -72,10 +72,9 @@ type RealtimeMetrics struct {
 	AgentsOffline   int `json:"agents_offline"`
 
 	// Состояние очередей
-	CallsInQueue    int `json:"calls_in_queue"`
-	LongestWaitSec  int `json:"longest_wait_sec"`
-	AvgWaitSec      int `json:"avg_wait_sec"`
-	CallsPerMinute  int `json:"calls_per_minute"`
+	LongestWaitSec int `json:"longest_wait_sec"`
+	AvgWaitSec     int `json:"avg_wait_sec"`
+	CallsPerMinute int `json:"calls_per_minute"`
 
 	// Качество за последние 5 минут
 	ServiceLevel    float64 `json:"service_level"`    // % отвеченных в SLA

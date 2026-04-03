@@ -23,7 +23,6 @@ type RealtimeMetrics = {
   agents_in_call: number;
   agents_wrap_up: number;
   agents_offline: number;
-  calls_in_queue: number;
   longest_wait_sec: number;
   avg_wait_sec: number;
   calls_per_minute: number;
@@ -372,12 +371,6 @@ const RealtimeTab = ({
           color={realtime.abandonment_rate <= 5 ? '#10b981' : realtime.abandonment_rate <= 10 ? '#f59e0b' : '#ef4444'}
           icon="📉"
           decimals={1}
-        />
-        <MetricCard
-          label="В очереди"
-          value={realtime.calls_in_queue}
-          color="#8b5cf6"
-          icon="📋"
         />
         <MetricCard
           label="Среднее ожидание"
