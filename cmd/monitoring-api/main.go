@@ -370,21 +370,23 @@ func handleStatusDistribution(w http.ResponseWriter, r *http.Request, pool *pgxp
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// Читаем из global_metrics для консистентности с другими метриками
+	// Тот же снимок, что и у глобального calls_count за 10m: иначе при нуле звонков
+	// status_* не вставляются, а MAX по status_* оставлял бы старые строки на диаграмме.
 	rows, err := pool.Query(ctx, `
+		WITH snapshot AS (
+			SELECT MAX(calculated_at) AS ca
+			FROM global_metrics
+			WHERE name = 'calls_count' AND time_window = '10m' AND queue_id IS NULL
+		)
 		SELECT 
-			REPLACE(name, 'status_', '') AS status,
-			value::INT AS count
-		FROM global_metrics
-		WHERE name LIKE 'status_%' 
-			AND time_window = '10m'
-			AND queue_id IS NULL
-			AND calculated_at = (
-				SELECT MAX(calculated_at) 
-				FROM global_metrics 
-				WHERE name LIKE 'status_%' AND time_window = '10m'
-			)
-		ORDER BY value DESC
+			REPLACE(gm.name, 'status_', '') AS status,
+			gm.value::INT AS count
+		FROM global_metrics gm
+		JOIN snapshot s ON gm.calculated_at = s.ca
+		WHERE gm.name LIKE 'status_%'
+			AND gm.time_window = '10m'
+			AND gm.queue_id IS NULL
+		ORDER BY gm.value DESC
 	`)
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
@@ -414,8 +416,13 @@ func handleTopAgents(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool)
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// Читаем из global_metrics для консистентности, джойним с agents для имён
+	// Тот же calculated_at, что у calls_count за 10m (см. handleStatusDistribution).
 	rows, err := pool.Query(ctx, `
+		WITH snapshot AS (
+			SELECT MAX(calculated_at) AS ca
+			FROM global_metrics
+			WHERE name = 'calls_count' AND time_window = '10m' AND queue_id IS NULL
+		)
 		SELECT 
 			REPLACE(gm.name, 'agent_calls_', '') AS agent_id,
 			a.full_name,
@@ -424,15 +431,11 @@ func handleTopAgents(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool)
 			0 AS sla_percent,
 			0 AS avg_rating
 		FROM global_metrics gm
+		JOIN snapshot s ON gm.calculated_at = s.ca
 		JOIN agents a ON REPLACE(gm.name, 'agent_calls_', '') = a.agent_id
 		WHERE gm.name LIKE 'agent_calls_%'
 			AND gm.time_window = '10m'
 			AND gm.queue_id IS NULL
-			AND gm.calculated_at = (
-				SELECT MAX(calculated_at) 
-				FROM global_metrics 
-				WHERE name LIKE 'agent_calls_%' AND time_window = '10m'
-			)
 		ORDER BY gm.value DESC
 		LIMIT 10
 	`)
