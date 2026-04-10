@@ -1,6 +1,4 @@
-// cmd/realtime-consumer/main.go
-// Realtime Consumer — читает события из Kafka, вычисляет метрики реального времени
-// и сохраняет их в Redis для последующего чтения сервисом Monitoring API.
+// Realtime Consumer — читает события из Kafka, вычисляет метрики реального времени и сохраняет их в Redis.
 package main
 
 import (
@@ -19,17 +17,11 @@ import (
 	"github.com/example/contact-center-monitoring/internal/models"
 )
 
-// Общее количество операторов в контакт-центре
 const TotalAgents = 20
 
-// MetricsAggregator хранит состояние для вычисления realtime-метрик
 type MetricsAggregator struct {
 	mu sync.RWMutex
-
-	// Скользящее окно событий за последние 5 минут
 	recentCalls []callRecord
-
-	// Состояние операторов с временем последнего события
 	agentLastEvent map[string]agentEvent
 }
 
@@ -62,7 +54,6 @@ func (a *MetricsAggregator) AddEvent(evt *models.CallEvent) {
 
 	now := time.Now()
 
-	// Добавляем запись
 	a.recentCalls = append(a.recentCalls, callRecord{
 		timestamp:   now,
 		status:      evt.Status,
@@ -72,7 +63,6 @@ func (a *MetricsAggregator) AddEvent(evt *models.CallEvent) {
 		agentID:     evt.AgentID,
 	})
 
-	// Запоминаем оператора и его последнее событие
 	if evt.AgentID != "" {
 		a.agentLastEvent[evt.AgentID] = agentEvent{
 			timestamp:   now,
@@ -82,7 +72,6 @@ func (a *MetricsAggregator) AddEvent(evt *models.CallEvent) {
 		}
 	}
 
-	// Удаляем старые записи (старше 5 минут)
 	cutoff := now.Add(-5 * time.Minute)
 	newCalls := make([]callRecord, 0, len(a.recentCalls))
 	for _, c := range a.recentCalls {
@@ -102,38 +91,28 @@ func (a *MetricsAggregator) GetMetrics() models.RealtimeMetrics {
 		UpdatedAt: now,
 	}
 
-	// Подсчёт состояний операторов на основе времени последнего события
-	// Логика: начинаем с TotalAgents свободных операторов,
-	// затем вычитаем тех, кто сейчас занят (на линии или в обработке)
 	for _, evt := range a.agentLastEvent {
-		// Сколько времени прошло с момента события
 		elapsed := now.Sub(evt.timestamp)
 
-		// Симулируем, что оператор был "на линии" talk_seconds
-		// и "в обработке" wrap_seconds после этого
 		talkDuration := time.Duration(evt.talkSeconds) * time.Second / 10 // сжимаем время для демо
 		wrapDuration := time.Duration(evt.wrapSeconds) * time.Second / 10
 
 		if evt.status == "abandoned" || evt.status == "voicemail" {
-			// Эти звонки не обслуживались оператором — он свободен
 			continue
-		} else if elapsed < talkDuration {
-			// Оператор ещё "на линии"
+		}
+		else if elapsed < talkDuration {
 			metrics.AgentsInCall++
-		} else if elapsed < talkDuration+wrapDuration {
-			// Оператор в послеразговорной обработке
+		} 
+		else if elapsed < talkDuration+wrapDuration {
 			metrics.AgentsWrapUp++
 		}
-		// Если elapsed >= talkDuration+wrapDuration, оператор свободен (не считаем)
 	}
 
-	// Свободные = всего - занятые - в обработке
 	metrics.AgentsAvailable = TotalAgents - metrics.AgentsInCall - metrics.AgentsWrapUp
 	if metrics.AgentsAvailable < 0 {
 		metrics.AgentsAvailable = 0
 	}
 
-	// Метрики за последние 5 минут
 	if len(a.recentCalls) > 0 {
 		var totalWait, slaMetCount, abandonedCount int
 		var maxWait int
@@ -213,7 +192,6 @@ func main() {
 				aggregator.AddEvent(&evt)
 				eventCount++
 
-				// Логируем каждые 10 секунд
 				if time.Since(lastLogTime) > 10*time.Second {
 					metrics := aggregator.GetMetrics()
 					log.Printf("realtime-consumer: processed %d events, agents=%d/%d/%d, recentCalls=%d, SL=%.1f%%",
@@ -239,7 +217,7 @@ func main() {
 			case <-ticker.C:
 				metrics := aggregator.GetMetrics()
 
-				// Сохраняем в Redis
+				// Сохранение в Redis
 				if err := saveMetricsToRedis(ctx, rdb, &metrics); err != nil {
 					log.Printf("realtime-consumer: redis error: %v", err)
 				}

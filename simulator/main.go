@@ -1,7 +1,4 @@
-// simulator/main.go
-// Генератор синтетических данных контакт-центра.
-// Запускается ОТДЕЛЬНО от платформы мониторинга.
-// Отправляет события на HTTP API producer'а платформы.
+// Генератор синтетических данных контактного центра. Отправляет события на HTTP API producer'а платформы.
 package main
 
 import (
@@ -48,8 +45,8 @@ type Agent struct {
 	Name         string
 	PrimaryQueue string
 	Skills       []string
-	LastCallEnd  time.Time // Когда закончился последний звонок
-	IsBusy       bool      // Занят ли сейчас
+	LastCallEnd  time.Time
+	IsBusy       bool      
 }
 
 var (
@@ -58,11 +55,11 @@ var (
 		ID     string
 		Weight int
 	}{
-		{"support", 35},      // 35% звонков — поддержка
-		{"sales", 25},        // 25% — продажи
-		{"billing", 20},      // 20% — биллинг
-		{"tech-support", 15}, // 15% — тех. поддержка
-		{"vip", 5},           // 5% — VIP-клиенты
+		{"support", 35}, 
+		{"sales", 25},      
+		{"billing", 20},      
+		{"tech-support", 15}, 
+		{"vip", 5},           
 	}
 
 	// Типы звонков
@@ -70,20 +67,20 @@ var (
 		Type   string
 		Weight int
 	}{
-		{"inbound", 85},  // 85% входящие
-		{"outbound", 10}, // 10% исходящие
-		{"callback", 5},  // 5% обратные звонки
+		{"inbound", 85},
+		{"outbound", 10}, 
+		{"callback", 5},
 	}
 
-	// Статусы звонков (реалистичное распределение для хорошего контакт-центра)
+	// Статусы звонков
 	statuses = []struct {
 		Status string
 		Weight int
 	}{
-		{"completed", 82},   // 82% успешно завершены
-		{"abandoned", 8},    // 8% брошены (хороший показатель < 10%)
-		{"transferred", 7},  // 7% переведены
-		{"voicemail", 3},    // 3% голосовая почта
+		{"completed", 82},   
+		{"abandoned", 8},    
+		{"transferred", 7},  
+		{"voicemail", 3},   
 	}
 
 	disconnectReasons = map[string][]string{
@@ -106,7 +103,6 @@ func main() {
 
 	rand.Seed(time.Now().UnixNano())
 
-	// Инициализируем операторов
 	agents := initAgents()
 	log.Printf("Инициализировано %d операторов", len(agents))
 
@@ -121,18 +117,13 @@ func main() {
 			break
 		}
 
-		// Случайный интервал с вариацией ±50%
 		interval := time.Duration(float64(*intervalSec) * (0.5 + rand.Float64()))
 		time.Sleep(interval * time.Second)
 
-		// Генерируем от 1 до 4 параллельных звонков
 		numCalls := 1 + rand.Intn(4)
-		
-		// Собираем свободных операторов
+
 		availableAgents := getAvailableAgents(agents)
-		
-		// Ограничиваем количество звонков числом свободных операторов
-		// (для звонков abandoned/voicemail оператор не нужен, но для реализма ограничим)
+
 		if numCalls > len(availableAgents) && len(availableAgents) > 0 {
 			numCalls = len(availableAgents)
 		}
@@ -142,15 +133,12 @@ func main() {
 			continue
 		}
 
-		// Генерируем и отправляем звонки
 		sentInBatch := 0
 		for i := 0; i < numCalls && i < len(availableAgents); i++ {
 			agent := availableAgents[i]
-			
-			// Генерируем событие
+
 			event := generateRealisticCall(agent)
 
-			// Обновляем состояние оператора
 			updateAgentState(agent, event)
 
 			if err := sendEvent(client, *producerURL, event); err != nil {
@@ -206,7 +194,7 @@ func initAgents() []*Agent {
 			Name:         a.Name,
 			PrimaryQueue: a.PrimaryQueue,
 			Skills:       a.Skills,
-			LastCallEnd:  time.Now().Add(-time.Hour), // Все свободны в начале
+			LastCallEnd:  time.Now().Add(-time.Hour),
 			IsBusy:       false,
 		}
 	}
@@ -215,15 +203,13 @@ func initAgents() []*Agent {
 
 func getAvailableAgents(agents []*Agent) []*Agent {
 	now := time.Now()
-	
-	// Освобождаем операторов, у которых прошло достаточно времени
+
 	for _, a := range agents {
 		if a.IsBusy && now.Sub(a.LastCallEnd) > 0 {
 			a.IsBusy = false
 		}
 	}
 
-	// Собираем всех свободных операторов
 	available := make([]*Agent, 0)
 	for _, a := range agents {
 		if !a.IsBusy {
@@ -231,7 +217,6 @@ func getAvailableAgents(agents []*Agent) []*Agent {
 		}
 	}
 
-	// Перемешиваем для случайного выбора
 	rand.Shuffle(len(available), func(i, j int) {
 		available[i], available[j] = available[j], available[i]
 	})
@@ -241,19 +226,15 @@ func getAvailableAgents(agents []*Agent) []*Agent {
 
 func updateAgentState(agent *Agent, event *CallEvent) {
 	if event.Status == "abandoned" || event.Status == "voicemail" {
-		// Оператор не участвовал в звонке
 		return
 	}
 
-	// Оператор занят на время разговора + обработки
-	// Сжимаем время в 60 раз для симуляции (1 минута реального времени = 1 секунда симуляции)
-	// Это позволяет генерировать реалистичные данные без блокировки операторов
 	busySeconds := (event.TalkSeconds + event.WrapUpSeconds) / 60
 	if busySeconds < 3 {
-		busySeconds = 3 // Минимум 3 секунды занятости
+		busySeconds = 3 
 	}
 	if busySeconds > 10 {
-		busySeconds = 10 // Максимум 10 секунд занятости
+		busySeconds = 10 
 	}
 	agent.LastCallEnd = time.Now().Add(time.Duration(busySeconds) * time.Second)
 	agent.IsBusy = true
@@ -261,23 +242,15 @@ func updateAgentState(agent *Agent, event *CallEvent) {
 
 func generateRealisticCall(agent *Agent) *CallEvent {
 	now := time.Now()
-
-	// Выбираем очередь (предпочитаем основную очередь оператора)
 	queue := selectQueue(agent)
-
-	// Тип звонка
 	callType := selectCallType()
-
-	// Статус звонка
 	status := selectStatus()
 
-	// Генерируем реалистичные временные интервалы
 	waitSeconds := generateWaitTime(status)
 	talkSeconds := generateTalkTime(status)
 	holdSeconds := generateHoldTime(status, talkSeconds)
 	wrapUpSeconds := generateWrapUpTime(status)
 
-	// Вычисляем временные метки
 	totalDuration := waitSeconds + talkSeconds + wrapUpSeconds
 	startedAt := now.Add(-time.Duration(totalDuration) * time.Second)
 	endedAt := now
@@ -288,29 +261,23 @@ func generateRealisticCall(agent *Agent) *CallEvent {
 		answeredAt = &t
 	}
 
-	// SLA: ответ в течение 20 секунд (для хорошего КЦ ~80% должны укладываться)
 	slaMet := waitSeconds <= 20 && (status == "completed" || status == "transferred")
 
-	// Причина завершения
 	reasons := disconnectReasons[status]
 	disconnectReason := reasons[rand.Intn(len(reasons))]
 
-	// Количество переводов
 	transferCount := 0
 	if status == "transferred" {
 		transferCount = 1 + rand.Intn(2)
 	}
 
-	// First Call Resolution (85% для хорошего КЦ)
 	isFirstCallResolution := false
 	if status == "completed" {
 		isFirstCallResolution = rand.Float64() < 0.85
 	}
 
-	// Оценка клиента (70% оценивают, в основном 4-5)
 	var customerRating *int
 	if status == "completed" && rand.Float64() < 0.7 {
-		// Распределение: 5% оценка 1-2, 15% оценка 3, 30% оценка 4, 50% оценка 5
 		r := rand.Float64()
 		var rating int
 		switch {
@@ -328,10 +295,9 @@ func generateRealisticCall(agent *Agent) *CallEvent {
 		customerRating = &rating
 	}
 
-	// Sentiment score (в основном позитивный для хорошего КЦ)
 	var sentimentScore *float64
 	if status == "completed" || status == "transferred" {
-		s := rand.NormFloat64()*0.2 + 0.4 // Среднее 0.4, std 0.2
+		s := rand.NormFloat64()*0.2 + 0.4
 		if s < -1 {
 			s = -1
 		}
@@ -341,13 +307,11 @@ func generateRealisticCall(agent *Agent) *CallEvent {
 		sentimentScore = &s
 	}
 
-	// IVR путь (для входящих)
 	ivrPath := ""
 	if callType == "inbound" {
 		ivrPath = ivrPaths[rand.Intn(len(ivrPaths))]
 	}
 
-	// Определяем agent_id
 	agentID := ""
 	skillUsed := ""
 	if status != "abandoned" && status != "voicemail" {
@@ -383,11 +347,9 @@ func generateRealisticCall(agent *Agent) *CallEvent {
 }
 
 func selectQueue(agent *Agent) string {
-	// 70% звонков идут в основную очередь оператора
 	if rand.Float64() < 0.7 {
 		return agent.PrimaryQueue
 	}
-	// 30% — в случайную очередь из навыков
 	if len(agent.Skills) > 0 {
 		return agent.Skills[rand.Intn(len(agent.Skills))]
 	}
@@ -396,19 +358,16 @@ func selectQueue(agent *Agent) string {
 
 func generateWaitTime(status string) int {
 	if status == "abandoned" {
-		// Брошенные звонки — долгое ожидание (30-90 сек)
 		return 30 + rand.Intn(60)
 	}
-	// Хороший КЦ: большинство отвечают быстро
-	// 70% — до 15 сек, 20% — 15-25 сек, 10% — 25-40 сек
 	r := rand.Float64()
 	switch {
 	case r < 0.70:
-		return 3 + rand.Intn(12) // 3-15 сек
+		return 3 + rand.Intn(12) 
 	case r < 0.90:
-		return 15 + rand.Intn(10) // 15-25 сек
+		return 15 + rand.Intn(10) 
 	default:
-		return 25 + rand.Intn(15) // 25-40 сек
+		return 25 + rand.Intn(15)
 	}
 }
 
@@ -417,9 +376,8 @@ func generateTalkTime(status string) int {
 	case "abandoned", "voicemail":
 		return 0
 	case "transferred":
-		return 15 + rand.Intn(30) // 15-45 сек перед переводом
+		return 15 + rand.Intn(30)
 	default:
-		// Нормальный разговор: 30 сек - 1.5 минуты
 		return 30 + rand.Intn(60)
 	}
 }
@@ -428,9 +386,8 @@ func generateHoldTime(status string, talkSeconds int) int {
 	if status == "abandoned" || status == "voicemail" || talkSeconds == 0 {
 		return 0
 	}
-	// 20% звонков имеют удержание
 	if rand.Float64() < 0.2 {
-		return 10 + rand.Intn(40) // 10-50 сек
+		return 10 + rand.Intn(40)
 	}
 	return 0
 }
@@ -439,7 +396,6 @@ func generateWrapUpTime(status string) int {
 	if status == "abandoned" || status == "voicemail" {
 		return 0
 	}
-	// Послеразговорная обработка: 10-30 сек
 	return 10 + rand.Intn(20)
 }
 

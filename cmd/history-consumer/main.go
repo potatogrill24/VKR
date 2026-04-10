@@ -1,6 +1,4 @@
-// cmd/history-consumer/main.go
-// History Consumer — читает события из Kafka и записывает в PostgreSQL
-// для построения исторических отчётов и агрегации метрик.
+// History Consumer — читает события из Kafka и записывает в PostgreSQL для построения исторических отчетов и агрегации метрик.
 package main
 
 import (
@@ -50,6 +48,7 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
+// горутина для чтения событий из Kafka и вставки в таблицу "calls"
 	go func() {
 		for {
 			select {
@@ -89,6 +88,7 @@ func main() {
 	log.Println("history-consumer: shutting down")
 }
 
+// функция вставки в таблицу "calls"
 func insertCall(ctx context.Context, pool *pgxpool.Pool, c *models.CallEvent) error {
 	const q = `
 INSERT INTO calls (

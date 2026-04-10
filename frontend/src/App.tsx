@@ -1,3 +1,5 @@
+// Основной компонент приложения, содержащий описание логики взаимодействия с API и отображения данных на дашборде
+
 import { useEffect, useState, useCallback } from 'react';
 import {
   AreaChart,

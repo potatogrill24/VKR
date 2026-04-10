@@ -1,6 +1,4 @@
-// cmd/analyser/main.go
-// Analyser Service — периодически агрегирует данные из таблицы calls
-// и записывает глобальные метрики в global_metrics для отображения на дашборде.
+// Analyser Service — периодически агрегирует данные из таблицы calls и записывает глобальные метрики в global_metrics для отображения на дашборде.
 package main
 
 import (
@@ -53,9 +51,7 @@ func main() {
 func runAggregation(ctx context.Context, pool *pgxpool.Pool) error {
 	log.Println("analyser: starting aggregation...")
 
-	// Используем транзакцию с уровнем REPEATABLE READ для защиты от фантомного чтения.
-	// Это гарантирует, что все SELECT'ы внутри транзакции видят один и тот же снимок данных,
-	// даже если history-consumer вставляет новые записи параллельно.
+	//REPEATABLE READ для защиты от фантомного чтения
 	txOptions := pgx.TxOptions{
 		IsoLevel: pgx.RepeatableRead,
 	}
@@ -92,7 +88,7 @@ func runAggregation(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 
-	// Очистка старых метрик (вне транзакции — не критично)
+	// Очистка старых метрик
 	if _, err := pool.Exec(ctx, `DELETE FROM global_metrics WHERE calculated_at < NOW() - INTERVAL '1 hour'`); err != nil {
 		log.Printf("analyser: cleanup error: %v", err)
 	}
@@ -101,6 +97,7 @@ func runAggregation(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
+// Для вкладки "По звонкам"
 func aggregateGlobalTx(ctx context.Context, tx pgx.Tx, interval, window string) error {
 	q := `
 INSERT INTO global_metrics (name, value, time_window, queue_id, calculated_at)
@@ -147,6 +144,7 @@ FROM (
 	return err
 }
 
+// Для вкладки "По очередям"
 func aggregateByQueueTx(ctx context.Context, tx pgx.Tx, interval, window string) error {
 	q := `
 INSERT INTO global_metrics (name, value, time_window, queue_id, calculated_at)
@@ -203,6 +201,7 @@ GROUP BY queue_id`
 	return err
 }
 
+// Расчет метрики "По статусам"
 func aggregateByStatusTx(ctx context.Context, tx pgx.Tx, interval, window string) error {
 	q := `
 INSERT INTO global_metrics (name, value, time_window, queue_id, calculated_at)
@@ -220,6 +219,7 @@ GROUP BY status`
 	return err
 }
 
+// Расчет метрики "Топ-10 операторов по количеству обработанных звонков"
 func aggregateTopAgentsTx(ctx context.Context, tx pgx.Tx, interval, window string) error {
 	q := `
 INSERT INTO global_metrics (name, value, time_window, queue_id, calculated_at)

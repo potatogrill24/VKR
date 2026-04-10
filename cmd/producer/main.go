@@ -1,11 +1,5 @@
-// cmd/producer/main.go
-// Producer Service — HTTP API для приёма событий от внешних систем
-// и публикации их в Kafka.
-//
-// Эндпоинты:
-//   POST /api/events      — принять одно событие CallEvent
-//   POST /api/events/batch — принять массив событий
-//   GET  /api/health      — проверка здоровья
+// Producer Service — HTTP API для приёма событий от внешних систем и публикации их в Kafka.
+
 package main
 
 import (
@@ -54,7 +48,7 @@ func main() {
 		})
 	})
 
-	// Приём одного события
+	// Приём одного события CallEvent
 	mux.HandleFunc("/api/events", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -103,7 +97,7 @@ func main() {
 		})
 	})
 
-	// Приём пакета событий
+	// Приём пакета событий CallEvent
 	mux.HandleFunc("/api/events/batch", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -177,6 +171,7 @@ func main() {
 	srv.Shutdown(shutdownCtx)
 }
 
+// функция публикации события CallEvent в Kafka
 func publishEvent(ctx context.Context, writer *kafkago.Writer, event *models.CallEvent) error {
 	payload, err := json.Marshal(event)
 	if err != nil {

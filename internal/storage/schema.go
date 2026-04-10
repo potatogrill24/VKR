@@ -1,6 +1,4 @@
-// internal/storage/schema.go
-// Пакет storage предоставляет утилиты для работы с PostgreSQL.
-// Схема БД создаётся через init-скрипты в deployments/init-db/
+// Пакет storage предоставляет утилиты для работы с PostgreSQL. Схема БД создаётся через init-скрипты
 package storage
 
 import (
@@ -11,8 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// WaitForDB пытается подключиться к БД с повторными попытками.
-// Используется сервисами для ожидания готовности PostgreSQL при старте.
+// WaitForDB пытается подключиться к БД с повторными попытками. Используется сервисами для ожидания готовности PostgreSQL при старте.
 func WaitForDB(ctx context.Context, dsn string, maxAttempts int) (*pgxpool.Pool, error) {
 	var pool *pgxpool.Pool
 	var err error

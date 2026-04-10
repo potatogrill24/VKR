@@ -1,6 +1,3 @@
--- 02_seed_data.sql
--- Начальные данные для справочников
-
 -- Очереди контакт-центра
 INSERT INTO queues (queue_id, queue_name, description, sla_threshold_seconds, priority) VALUES
     ('support', 'Техническая поддержка', 'Общие вопросы по продуктам и услугам', 20, 2),
@@ -10,7 +7,7 @@ INSERT INTO queues (queue_id, queue_name, description, sla_threshold_seconds, pr
     ('vip', 'VIP-клиенты', 'Приоритетное обслуживание VIP-клиентов', 10, 1)
 ON CONFLICT (queue_id) DO NOTHING;
 
--- Операторы контакт-центра (из agents.csv)
+-- Операторы контакт-центра
 INSERT INTO agents (agent_id, full_name, email, primary_queue, skills, hire_date, is_active) VALUES
     ('agent-1', 'Иван Петров', 'ivan.petrov@example.com', 'support', ARRAY['support', 'billing', 'english'], '2024-01-15', true),
     ('agent-2', 'Мария Иванова', 'maria.ivanova@example.com', 'sales', ARRAY['sales', 'english', 'vip'], '2024-02-01', true),

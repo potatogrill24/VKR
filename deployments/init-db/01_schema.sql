@@ -1,6 +1,3 @@
--- 01_schema.sql
--- Создание схемы базы данных для платформы мониторинга контакт-центра
-
 -- Таблица справочник операторов
 CREATE TABLE IF NOT EXISTS agents (
     agent_id VARCHAR(50) PRIMARY KEY,
@@ -55,7 +52,7 @@ CREATE TABLE IF NOT EXISTS calls (
     CONSTRAINT valid_status CHECK (status IN ('completed', 'abandoned', 'transferred', 'voicemail'))
 );
 
--- Таблица глобальных метрик (агрегированные данные)
+-- Таблица глобальных метрик
 CREATE TABLE IF NOT EXISTS global_metrics (
     id BIGSERIAL PRIMARY KEY,
     name VARCHAR(50) NOT NULL,

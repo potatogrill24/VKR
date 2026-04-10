@@ -24,7 +24,7 @@ func NewReader(topic, groupID string) *kafkago.Reader {
 		GroupID:        groupID,
 		MinBytes:       1,
 		MaxBytes:       10e6,
-		StartOffset:    kafkago.FirstOffset, // Читаем с начала при первом запуске
+		StartOffset:    kafkago.FirstOffset,
 		CommitInterval: time.Second,
 	})
 }

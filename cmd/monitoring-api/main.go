@@ -1,6 +1,4 @@
-// cmd/monitoring-api/main.go
-// Monitoring API — единая точка входа для фронтенда.
-// Предоставляет HTTP эндпоинты и WebSocket для realtime метрик.
+// Monitoring API — единая точка входа для фронтенда. Предоставляет HTTP эндпоинты и WebSocket для realtime метрик.
 package main
 
 import (
@@ -91,7 +89,7 @@ func main() {
 		handleTopAgents(w, r, pool)
 	}))
 
-	// WebSocket для realtime метрик (единая точка входа)
+	// WebSocket для realtime метрик
 	hub := NewHub()
 	mux.HandleFunc("/ws/realtime", func(w http.ResponseWriter, r *http.Request) {
 		handleWebSocket(w, r, hub)
@@ -179,8 +177,6 @@ func handleLatestMetrics(w http.ResponseWriter, r *http.Request, pool *pgxpool.P
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// Получаем все метрики для последнего calculated_at каждого окна
-	// Это гарантирует, что все метрики одного окна из одного цикла агрегации
 	rows, err := pool.Query(ctx, `
 		WITH latest_calc AS (
 			SELECT MAX(calculated_at) as calc_at, time_window
@@ -216,7 +212,6 @@ func handleLatestMetrics(w http.ResponseWriter, r *http.Request, pool *pgxpool.P
 		result[window]["calculated_at"] = calculatedAt
 	}
 
-	// Если данных нет, возвращаем структуру с нулями для корректного отображения на фронтенде
 	if len(result) == 0 {
 		now := time.Now()
 		defaultMetrics := map[string]interface{}{
@@ -243,8 +238,6 @@ func handleQueueMetrics(w http.ResponseWriter, r *http.Request, pool *pgxpool.Po
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// Читаем метрики по очередям, используя тот же calculated_at что и глобальные метрики
-	// Это гарантирует консистентность: сумма по очередям = calls_count
 	rows, err := pool.Query(ctx, `
 		WITH latest_calc AS (
 			SELECT MAX(calculated_at) as calc_at, time_window
@@ -265,7 +258,6 @@ func handleQueueMetrics(w http.ResponseWriter, r *http.Request, pool *pgxpool.Po
 	}
 	defer rows.Close()
 
-	// Структура: { "2m": { "support": { "calls_count": 10, ... } }, "10m": { ... } }
 	result := make(map[string]map[string]map[string]float64)
 	for rows.Next() {
 		var window, queue, name string
@@ -370,8 +362,6 @@ func handleStatusDistribution(w http.ResponseWriter, r *http.Request, pool *pgxp
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// Тот же снимок, что и у глобального calls_count за 10m: иначе при нуле звонков
-	// status_* не вставляются, а MAX по status_* оставлял бы старые строки на диаграмме.
 	rows, err := pool.Query(ctx, `
 		WITH snapshot AS (
 			SELECT MAX(calculated_at) AS ca
@@ -416,7 +406,6 @@ func handleTopAgents(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool)
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// Тот же calculated_at, что у calls_count за 10m (см. handleStatusDistribution).
 	rows, err := pool.Query(ctx, `
 		WITH snapshot AS (
 			SELECT MAX(calculated_at) AS ca
@@ -467,7 +456,6 @@ func handleTopAgents(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool)
 	json.NewEncoder(w).Encode(result)
 }
 
-// WebSocket Hub для управления подключениями
 type Hub struct {
 	mu      sync.RWMutex
 	clients map[*websocket.Conn]struct{}
