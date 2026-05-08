@@ -212,7 +212,7 @@ export const App = () => {
     <div style={styles.container}>
       <header style={styles.header}>
         <div style={styles.headerContent}>
-          <h1 style={styles.title}>Мониторинг контакт-центра</h1>
+          <h1 style={styles.title}>Мониторинг контактного центра</h1>
           <div style={styles.headerRight}>
             <ConnectionStatus status={wsStatus} />
             {lastUpdate && (
@@ -463,7 +463,7 @@ const AnalyticsTab = ({
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24, marginTop: 32 }}>
         <div>
-          <h2 style={styles.sectionTitle}>Распределение статусов (за 10 мин)</h2>
+          <h2 style={styles.sectionTitle}>Распределение статусов</h2>
           <div style={styles.chartContainer}>
             {pieData.length > 0 ? (
               <ResponsiveContainer width="100%" height={280}>
@@ -493,7 +493,7 @@ const AnalyticsTab = ({
         </div>
 
         <div>
-          <h2 style={styles.sectionTitle}>Топ операторов (за 10 мин)</h2>
+          <h2 style={styles.sectionTitle}>Топ операторов</h2>
           <div style={styles.chartContainer}>
             {topAgents.length > 0 ? (
               <ResponsiveContainer width="100%" height={280}>
@@ -801,7 +801,7 @@ const AgentsTab = ({ agents }: { agents: Agent[] }) => {
   return (
     <div>
       <h2 style={styles.sectionTitle}>Список операторов</h2>
-      <p style={styles.hint}>Справочник операторов контакт-центра</p>
+      <p style={styles.hint}>Справочник операторов контактного центра</p>
       <div style={styles.tableContainer}>
         <table style={styles.table}>
           <thead>

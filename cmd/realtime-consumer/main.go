@@ -100,10 +100,9 @@ func (a *MetricsAggregator) GetMetrics() models.RealtimeMetrics {
 		if evt.status == "abandoned" || evt.status == "voicemail" {
 			continue
 		}
-		else if elapsed < talkDuration {
+		if elapsed < talkDuration {
 			metrics.AgentsInCall++
-		} 
-		else if elapsed < talkDuration+wrapDuration {
+		} else if elapsed < talkDuration+wrapDuration {
 			metrics.AgentsWrapUp++
 		}
 	}
