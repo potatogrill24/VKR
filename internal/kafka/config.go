@@ -7,7 +7,6 @@ import (
 const (
 	DefaultKafkaBrokers = "kafka:9092"
 	DefaultCallsTopic   = "ccm.calls"
-	DefaultMetricsTopic = "ccm.metrics"
 )
 
 func BrokersFromEnv() string {
